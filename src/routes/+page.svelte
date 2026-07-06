@@ -99,9 +99,9 @@
         <span>Poll interval (s)</span>
         <input type="number" min="10" bind:value={cfg.poll_interval_secs} onchange={saveCfg} />
       </label>
-      <label>
-        <span>Warn lead time (min)</span>
-        <input type="number" min="0" bind:value={cfg.projection_margin_mins} onchange={saveCfg} />
+      <label title="Only warn when projected to hit the cap at least this many minutes before the window resets. Small gaps are noise.">
+        <span>Warn if capping ≥ (min) early</span>
+        <input type="number" min="0" step="15" bind:value={cfg.projection_margin_mins} onchange={saveCfg} />
       </label>
       <label>
         <span>Velocity window (h)</span>

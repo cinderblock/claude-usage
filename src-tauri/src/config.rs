@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     /// How often to poll the usage endpoint.
     pub poll_interval_secs: u64,
-    /// Alert when projected to hit the cap at least this many minutes before the
-    /// window resets (a real deficit, not a photo-finish).
+    /// Alert only when projected to hit the cap at least this many minutes
+    /// before the window resets. A small gap (you cap ~5 min before reset) is
+    /// noise; the default (~1 hour) only fires on a genuine overshoot.
     pub projection_margin_mins: i64,
     /// Trailing span used to estimate current burn velocity.
     pub velocity_window_hours: f64,
@@ -34,7 +35,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             poll_interval_secs: 60,
-            projection_margin_mins: 30,
+            projection_margin_mins: 60,
             velocity_window_hours: 6.0,
             min_elapsed_frac: 0.15,
             well_beyond_pct: 60.0,
