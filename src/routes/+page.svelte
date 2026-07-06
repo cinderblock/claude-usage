@@ -7,6 +7,7 @@
     getConfig,
     setConfig,
     refreshNow,
+    testNotification,
     prettyKind,
     fmtHours,
     type Snapshot,
@@ -131,6 +132,7 @@
         <input type="checkbox" bind:checked={cfg.self_refresh_tokens} onchange={saveCfg} />
         <span>Self-refresh token</span>
       </label>
+      <button class="test-btn" onclick={() => testNotification()}>Send test notification</button>
     </div>
   {/if}
 
@@ -342,6 +344,19 @@
   }
   .settings label.check {
     justify-content: flex-start;
+  }
+  .test-btn {
+    margin-top: 4px;
+    background: #2c3038;
+    border: 1px solid #3a3f48;
+    color: #e8eaed;
+    border-radius: 5px;
+    padding: 6px 8px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .test-btn:hover {
+    background: #363b44;
   }
   .settings input[type="number"] {
     width: 70px;

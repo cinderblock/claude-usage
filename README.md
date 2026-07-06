@@ -50,7 +50,7 @@ in sync. This is on by default and can be disabled in Settings
 ```sh
 npm install
 npm run tauri dev        # live-reload dev
-cargo run --bin smoke    # (in src-tauri/) print a parsed usage snapshot, no UI
+cargo run --example smoke    # (in src-tauri/) print a parsed usage snapshot, no UI
 cargo test --lib         # (in src-tauri/) projection unit tests
 ```
 

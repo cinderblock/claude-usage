@@ -42,6 +42,7 @@ export interface Config {
 
 export const getUsage = () => invoke<Snapshot | null>("get_usage");
 export const refreshNow = () => invoke<void>("refresh_now");
+export const testNotification = () => invoke<void>("test_notification");
 export const getConfig = () => invoke<Config>("get_config");
 export const setConfig = (config: Config) => invoke<void>("set_config", { config });
 

@@ -202,13 +202,13 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
             let mut st = state.alerts.lock().unwrap();
             st.evaluate(&snapshot.windows, &cfg)
         };
+        let icon = notification_icon(&app);
         for a in alerts {
-            let _ = app
-                .notification()
-                .builder()
-                .title(a.title)
-                .body(a.body)
-                .show();
+            let mut b = app.notification().builder().title(a.title).body(a.body);
+            if let Some(ref path) = icon {
+                b = b.icon(path.as_str());
+            }
+            let _ = b.show();
         }
     }
 
@@ -298,6 +298,17 @@ fn prettify_tier(t: &str) -> String {
     }
 }
 
+/// Absolute path to the bundled notification icon, if present. Windows toasts
+/// otherwise fall back to a generic exe icon.
+fn notification_icon(app: &tauri::AppHandle) -> Option<String> {
+    let p = app.path().resource_dir().ok()?.join("icons/128x128.png");
+    if p.exists() {
+        Some(p.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
 fn tooltip(s: &Snapshot) -> String {
     if let Some(e) = &s.error {
         return format!("Claude Usage — error: {e}");
@@ -326,6 +337,19 @@ async fn refresh_now(app: tauri::AppHandle, state: tauri::State<'_, Arc<AppState
 #[tauri::command]
 fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Config {
     state.config.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn test_notification(app: tauri::AppHandle) -> Result<(), String> {
+    let mut b = app
+        .notification()
+        .builder()
+        .title("Claude Usage")
+        .body("Test notification — this is how alerts will look.");
+    if let Some(path) = notification_icon(&app) {
+        b = b.icon(path);
+    }
+    b.show().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -369,7 +393,8 @@ pub fn run() {
             get_usage,
             refresh_now,
             get_config,
-            set_config
+            set_config,
+            test_notification
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
