@@ -3,6 +3,7 @@ pub mod config;
 pub mod credentials;
 pub mod history;
 pub mod metrics;
+pub mod splat;
 pub mod tray;
 pub mod usage;
 
@@ -219,7 +220,7 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
             "ok" => tray::Status::Ok,
             _ => tray::Status::Unknown,
         };
-        let _ = tray.set_icon(Some(tray::render_icon(snapshot.tray_percent, status)));
+        let _ = tray.set_icon(Some(tray::render_icon(status)));
         let _ = tray.set_tooltip(Some(tooltip(&snapshot)));
         if let Ok(menu) = build_menu(&app, &snapshot) {
             let _ = tray.set_menu(Some(menu));
@@ -400,7 +401,7 @@ pub fn run() {
             app.manage(state.clone());
 
             // Tray with an initial placeholder icon + menu.
-            let init_icon = tray::render_icon(0.0, tray::Status::Unknown);
+            let init_icon = tray::render_icon(tray::Status::Unknown);
             let init_menu = Menu::with_items(
                 app,
                 &[

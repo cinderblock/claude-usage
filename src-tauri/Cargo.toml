@@ -34,9 +34,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # Local time-series history for velocity/burn-rate
 rusqlite = { version = "0.32", features = ["bundled"] }
 
-# Tray icon rendering (rasterize the % into a small badge)
+# Tray + app icon rendering (procedural splat)
 image = { version = "0.25", default-features = false, features = ["png"] }
-ab_glyph = "0.2"
 
 dirs = "5"
 anyhow = "1"
