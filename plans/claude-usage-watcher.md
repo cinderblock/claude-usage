@@ -167,6 +167,16 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
   monitoring"). `alert_worthy` gates notifications + red tray: suppressed while `elapsed_frac <
   min_elapsed_frac` (default 0.15) UNLESS `percent >= well_beyond_pct` (default 60). This stops
   noisy "will run out" alarms from a small burst at the very start of a window.
+- **Projection uncertainty (user, 2026-07-07):** don't judge "too much too fast" on the mean alone.
+  The least-squares fit now also returns the slope's standard error; from it we derive a 10–90%
+  band on `projected_final_pct` and a `cap_probability` (normal CDF of the rate needed to cap
+  ≥ margin early). `alert_worthy` additionally requires `cap_probability >= cap_confidence`
+  (config, default 0.75); with < 3 samples there's no stderr and gating falls back to the mean.
+  Caveat: the linear+iid-noise model understates real burstiness, but SSE over a staircase-y
+  series does capture much of it — "simple confidence", by request.
+- **Bars show overshoot (user, 2026-07-07):** popup bars span 0–150% with the 100% cap tick at the
+  2/3 mark; a translucent "ghost" fill runs current → projected, the confidence band overlays it,
+  and the region past the tick is red-tinted. Values are clamped at 150% for display.
 
 ## Progress log
 

@@ -23,6 +23,10 @@ pub struct Config {
     pub well_beyond_pct: f64,
     /// Secondary nudge: warn if already at/above this % and still climbing.
     pub near_cap_pct: f64,
+    /// Only alert when the probability of capping early (from the velocity
+    /// fit's uncertainty) is at least this (0–1). Judges the area under the
+    /// rate distribution rather than just the mean projection.
+    pub cap_confidence: f64,
     /// Also treat the API's own `severity` field as an alert trigger.
     pub use_api_severity: bool,
     /// Refresh + write back the token when expired (keeps Claude Code in sync).
@@ -40,6 +44,7 @@ impl Default for Config {
             min_elapsed_frac: 0.15,
             well_beyond_pct: 60.0,
             near_cap_pct: 95.0,
+            cap_confidence: 0.75,
             use_api_severity: true,
             self_refresh_tokens: true,
             notifications_enabled: true,

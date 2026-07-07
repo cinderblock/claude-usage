@@ -11,9 +11,13 @@ export interface Projection {
   time_to_reset_hours: number;
   elapsed_frac: number;
   rate_per_hour: number | null;
+  rate_stderr: number | null;
   eta_to_100_hours: number | null;
   cap_eta: string | null;
   projected_final_pct: number;
+  projected_final_low_pct: number | null;
+  projected_final_high_pct: number | null;
+  cap_probability: number | null;
   will_hit_wall: boolean;
   alert_worthy: boolean;
   summary: string;
@@ -35,6 +39,7 @@ export interface Config {
   min_elapsed_frac: number;
   well_beyond_pct: number;
   near_cap_pct: number;
+  cap_confidence: number;
   use_api_severity: boolean;
   self_refresh_tokens: boolean;
   notifications_enabled: boolean;

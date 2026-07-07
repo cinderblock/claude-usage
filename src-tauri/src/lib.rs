@@ -121,6 +121,7 @@ fn build_projections(state: &AppState, usage: &usage::UsageResponse, now: DateTi
             margin_mins: cfg.projection_margin_mins,
             min_elapsed_frac: cfg.min_elapsed_frac,
             well_beyond_pct: cfg.well_beyond_pct,
+            cap_confidence: cfg.cap_confidence,
         };
         projections.push(metrics::project(&w, &samples, now, &opts));
     }

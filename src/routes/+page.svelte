@@ -53,6 +53,21 @@
     return !cfg || p.elapsed_frac >= cfg.min_elapsed_frac;
   }
 
+  // Bars span 0–150% so an overshooting projection stays visible;
+  // the 100% cap sits at the 2/3 mark.
+  const BAR_MAX = 150;
+  function barX(v: number): number {
+    return (Math.min(Math.max(v, 0), BAR_MAX) / BAR_MAX) * 100;
+  }
+
+  /** "~118%" or "~95–140%" when the fit gives a meaningful spread. */
+  function fmtProjected(p: Projection): string {
+    const lo = p.projected_final_low_pct;
+    const hi = p.projected_final_high_pct;
+    if (lo != null && hi != null && hi - lo >= 2) return `~${lo.toFixed(0)}–${hi.toFixed(0)}%`;
+    return `~${p.projected_final_pct.toFixed(0)}%`;
+  }
+
   async function doRefresh() {
     refreshing = true;
     try {
@@ -120,6 +135,10 @@
         <span>Near-cap nudge (%)</span>
         <input type="number" min="50" max="100" bind:value={cfg.near_cap_pct} onchange={saveCfg} />
       </label>
+      <label title="Only alert when the odds of capping early are at least this. Uses the spread of the recent burn-rate fit, not just its average.">
+        <span>Alert confidence (0–1)</span>
+        <input type="number" min="0" max="1" step="0.05" bind:value={cfg.cap_confidence} onchange={saveCfg} />
+      </label>
       <label class="check">
         <input type="checkbox" bind:checked={cfg.notifications_enabled} onchange={saveCfg} />
         <span>Notifications</span>
@@ -143,27 +162,44 @@
       {#each snap.windows as p (p.kind + p.scope_key)}
         {@const lv = level(p)}
         {@const ttr = hoursToReset(p)}
-        {@const projected = Math.min(p.projected_final_pct, 100)}
+        {@const showProj = enoughSignal(p) && p.projected_final_pct > p.percent + 0.5}
+        {@const lo = p.projected_final_low_pct}
+        {@const hi = p.projected_final_high_pct}
         <div class="win {lv}">
           <div class="win-head">
             <span class="name">{p.scope_label ?? prettyKind(p.kind)}</span>
             <span class="pct">{p.percent.toFixed(0)}%</span>
           </div>
           <div class="bar">
-            <div class="fill" style="width:{Math.min(p.percent, 100)}%"></div>
-            {#if enoughSignal(p) && p.projected_final_pct > p.percent + 0.5}
-              <div class="proj-marker" style="left:{projected}%" title="projected at reset"></div>
+            <div class="over-zone" style="left:{barX(100)}%"></div>
+            <div class="fill" style="width:{barX(p.percent)}%"></div>
+            {#if showProj}
+              <div
+                class="proj-fill"
+                style="left:{barX(p.percent)}%; width:{barX(p.projected_final_pct) - barX(p.percent)}%"
+              ></div>
+              {#if lo != null && hi != null && hi - lo >= 2}
+                <div
+                  class="band"
+                  style="left:{barX(lo)}%; width:{Math.max(barX(hi) - barX(lo), 0.5)}%"
+                  title="likely range at reset (10–90%)"
+                ></div>
+              {/if}
+              <div class="proj-marker" style="left:{barX(p.projected_final_pct)}%" title="projected at reset"></div>
             {/if}
+            <div class="tick-100" style="left:{barX(100)}%"></div>
           </div>
           <div class="meta">
             {#if p.alert_worthy}
               <span class="warn-text">⚠ {p.summary}</span>
             {:else if p.will_hit_wall}
-              <span class="sub soft">on pace to cap early — monitoring · resets in {fmtHours(ttr)}</span>
+              <span class="sub soft">
+                on pace to cap early{#if p.cap_probability != null}&nbsp;(~{(p.cap_probability * 100).toFixed(0)}% odds){/if} — monitoring · resets in {fmtHours(ttr)}
+              </span>
             {:else}
               <span class="sub">resets in {fmtHours(ttr)}</span>
-              {#if enoughSignal(p) && p.rate_per_hour != null && p.rate_per_hour > 0.01}
-                <span class="sub dim">· ~{p.projected_final_pct.toFixed(0)}% by reset</span>
+              {#if showProj && p.rate_per_hour != null && p.rate_per_hour > 0.01}
+                <span class="sub dim">· {fmtProjected(p)} by reset</span>
               {/if}
             {/if}
           </div>
@@ -264,7 +300,15 @@
     height: 7px;
     background: #2c3038;
     border-radius: 4px;
-    overflow: hidden;
+    overflow: visible;
+  }
+  .over-zone {
+    position: absolute;
+    top: 0;
+    right: 0;
+    height: 100%;
+    background: rgba(210, 55, 43, 0.16);
+    border-radius: 0 4px 4px 0;
   }
   .fill {
     height: 100%;
@@ -278,6 +322,34 @@
   .win.crit .fill {
     background: #d2372b;
   }
+  .proj-fill {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    background: rgba(46, 160, 67, 0.35);
+    transition: left 0.4s ease, width 0.4s ease;
+  }
+  .win.warn .proj-fill {
+    background: rgba(219, 154, 4, 0.35);
+  }
+  .win.crit .proj-fill {
+    background: rgba(210, 55, 43, 0.35);
+  }
+  .band {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    background: rgba(232, 234, 237, 0.18);
+    border-radius: 2px;
+  }
+  .tick-100 {
+    position: absolute;
+    top: -2px;
+    width: 2px;
+    height: 11px;
+    margin-left: -1px;
+    background: rgba(232, 234, 237, 0.45);
+  }
   .proj-marker {
     position: absolute;
     top: -1px;
@@ -285,9 +357,6 @@
     height: 9px;
     background: #e8eaed;
     opacity: 0.8;
-  }
-  .bar {
-    overflow: visible;
   }
   .meta {
     margin-top: 5px;

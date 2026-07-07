@@ -10,7 +10,9 @@ check where you stand.
   utilization.
 - Left‑click the tray → a compact popup with every limit window (5‑hour, weekly,
   and per‑model weekly), each with a bar, a live reset countdown, and a
-  projection line.
+  projection line. Bars span 0–150% with the cap marked at the 2/3 point, so an
+  overshooting projection (ghost fill + marker, with a likely‑range band) stays
+  visible past 100%.
 - Right‑click → a menu breakdown of every window + Refresh / Open / Quit.
 - Native notifications when a window is **projected to run out before it resets**.
 
@@ -64,5 +66,14 @@ npm run tauri build
 
 Stored at the app config dir (`config.json`). Editable from the popup's Settings:
 `poll_interval_secs` (60), `projection_margin_mins` (30), `velocity_window_hours`
-(6), `near_cap_pct` (95), `use_api_severity`, `self_refresh_tokens`,
-`notifications_enabled`.
+(6), `near_cap_pct` (95), `cap_confidence` (0.75), `use_api_severity`,
+`self_refresh_tokens`, `notifications_enabled`.
+
+### Projection uncertainty
+
+The burn-velocity fit also yields a standard error, which propagates into a
+10th–90th percentile band around the projected final % (shown on the bar) and a
+**cap probability** — the area under the rate distribution beyond the rate that
+would hit the cap early. Alerts require that probability to reach
+`cap_confidence`, so a mean projection that barely crosses the wall on a noisy
+fit shows amber ("on pace… ~60% odds") instead of going straight to red.
