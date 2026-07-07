@@ -177,6 +177,14 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
 - **Bars show overshoot (user, 2026-07-07):** popup bars span 0–150% with the 100% cap tick at the
   2/3 mark; a translucent "ghost" fill runs current → projected, the confidence band overlays it,
   and the region past the tick is red-tinted. Values are clamped at 150% for display.
+- **Alert debounce + latch (user, 2026-07-07):** the old fire-once-until-clear de-dup re-armed on
+  every single clear poll, so noisy projections hovering at the threshold toasted constantly. Each
+  rule in `alerts.rs` is now a latch: condition must hold continuously `alert_sustain_mins`
+  (default 10) to engage/notify, must be clear that long to release, and within one window
+  instance re-fires only on escalation (proj: cap-probability +0.15; near: +5%; sev: rank +1).
+  Window reset re-arms. `Projection.alert_engaged` carries the latched state to the tray + UI so
+  red is stable too (`alert_worthy` alone now renders amber). Latches advance every successful
+  poll even with notifications disabled.
 
 ## Progress log
 

@@ -27,6 +27,10 @@ pub struct Config {
     /// fit's uncertainty) is at least this (0–1). Judges the area under the
     /// rate distribution rather than just the mean projection.
     pub cap_confidence: f64,
+    /// An alert condition must hold continuously this long before it notifies,
+    /// and be clear this long before it releases. Debounces noisy fits that
+    /// flap across the threshold poll-to-poll.
+    pub alert_sustain_mins: i64,
     /// Also treat the API's own `severity` field as an alert trigger.
     pub use_api_severity: bool,
     /// Refresh + write back the token when expired (keeps Claude Code in sync).
@@ -45,6 +49,7 @@ impl Default for Config {
             well_beyond_pct: 60.0,
             near_cap_pct: 95.0,
             cap_confidence: 0.75,
+            alert_sustain_mins: 10,
             use_api_severity: true,
             self_refresh_tokens: true,
             notifications_enabled: true,

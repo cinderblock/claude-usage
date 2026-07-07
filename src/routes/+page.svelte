@@ -41,9 +41,10 @@
 
   type Level = "ok" | "warn" | "crit";
   function level(p: Projection): Level {
-    if (p.alert_worthy) return "crit";
+    // Red follows the latched alert (sustained past the debounce), so a noisy
+    // fit flapping across the confidence bar shows amber, not flickering red.
+    if (p.alert_engaged) return "crit";
     const climbing = (p.rate_per_hour ?? 0) > 0.01;
-    // A projected wall that's merely early (not alert-worthy) shows amber, not red.
     if (p.will_hit_wall || (cfg && p.percent >= cfg.near_cap_pct && climbing) || p.severity === "warning" || p.severity === "critical")
       return "warn";
     return "ok";
@@ -139,6 +140,10 @@
         <span>Alert confidence (0–1)</span>
         <input type="number" min="0" max="1" step="0.05" bind:value={cfg.cap_confidence} onchange={saveCfg} />
       </label>
+      <label title="An alert must hold continuously this long before it notifies, and be clear this long before it re-arms. Debounces noisy projections.">
+        <span>Sustain before alert (min)</span>
+        <input type="number" min="0" step="1" bind:value={cfg.alert_sustain_mins} onchange={saveCfg} />
+      </label>
       <label class="check">
         <input type="checkbox" bind:checked={cfg.notifications_enabled} onchange={saveCfg} />
         <span>Notifications</span>
@@ -190,7 +195,7 @@
             <div class="tick-100" style="left:{barX(100)}%"></div>
           </div>
           <div class="meta">
-            {#if p.alert_worthy}
+            {#if p.alert_engaged}
               <span class="warn-text">⚠ {p.summary}</span>
             {:else if p.will_hit_wall}
               <span class="sub soft">

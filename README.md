@@ -66,8 +66,8 @@ npm run tauri build
 
 Stored at the app config dir (`config.json`). Editable from the popup's Settings:
 `poll_interval_secs` (60), `projection_margin_mins` (30), `velocity_window_hours`
-(6), `near_cap_pct` (95), `cap_confidence` (0.75), `use_api_severity`,
-`self_refresh_tokens`, `notifications_enabled`.
+(6), `near_cap_pct` (95), `cap_confidence` (0.75), `alert_sustain_mins` (10),
+`use_api_severity`, `self_refresh_tokens`, `notifications_enabled`.
 
 ### Projection uncertainty
 
@@ -77,3 +77,14 @@ The burn-velocity fit also yields a standard error, which propagates into a
 would hit the cap early. Alerts require that probability to reach
 `cap_confidence`, so a mean projection that barely crosses the wall on a noisy
 fit shows amber ("on pace… ~60% odds") instead of going straight to red.
+
+### Alerts are debounced and latched
+
+Noisy fits flap across thresholds poll-to-poll, so a raw edge trigger would
+toast constantly. Each alert rule is a latch instead: the condition must hold
+continuously for `alert_sustain_mins` (10) before it engages and notifies, and
+it must stay clear that long before it releases. Once fired for a window
+instance it re-fires only on a real escalation (cap odds +0.15, usage +5%, or
+an API severity step up) or after the window resets. The red tray/UI state
+follows the latch too, so it doesn't flicker; amber shows while a projection is
+still being confirmed.

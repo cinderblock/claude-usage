@@ -20,6 +20,7 @@ export interface Projection {
   cap_probability: number | null;
   will_hit_wall: boolean;
   alert_worthy: boolean;
+  alert_engaged: boolean;
   summary: string;
 }
 
@@ -40,6 +41,7 @@ export interface Config {
   well_beyond_pct: number;
   near_cap_pct: number;
   cap_confidence: number;
+  alert_sustain_mins: number;
   use_api_severity: boolean;
   self_refresh_tokens: boolean;
   notifications_enabled: boolean;

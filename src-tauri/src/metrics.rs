@@ -56,8 +56,12 @@ pub struct Projection {
     pub will_hit_wall: bool,
     /// True when `will_hit_wall` AND it's worth actively alerting: either we're
     /// past the noisy early phase of the window, or usage is already well beyond
-    /// where it should be. Drives notifications + the red tray state.
+    /// where it should be. Feeds the alert latch; shows amber until sustained.
     pub alert_worthy: bool,
+    /// Latched by the notifier once `alert_worthy` has held for the sustain
+    /// period (and until it's been clear that long). Drives the stable red
+    /// tray/UI state. Set during alert evaluation, not by `project`.
+    pub alert_engaged: bool,
     /// Human one-liner for UI/notifications.
     pub summary: String,
 }
@@ -279,6 +283,7 @@ pub fn project(
         cap_probability,
         will_hit_wall,
         alert_worthy,
+        alert_engaged: false,
         summary,
     }
 }

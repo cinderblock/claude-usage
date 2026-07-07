@@ -53,14 +53,26 @@ pub async fn ensure_token(client: &reqwest::Client, self_refresh: bool) -> Resul
 }
 
 fn status_for(p: &Projection, cfg: &Config) -> tray::Status {
-    if p.alert_worthy {
+    // Red follows the latched alert, not the raw flag — a noisy fit flapping
+    // across the confidence bar shows amber until it sustains.
+    if p.alert_engaged {
         tray::Status::Critical
-    } else if (p.percent >= cfg.near_cap_pct && p.rate_per_hour.map(|r| r > 0.01).unwrap_or(false))
+    } else if p.alert_worthy
+        || (p.percent >= cfg.near_cap_pct && p.rate_per_hour.map(|r| r > 0.01).unwrap_or(false))
         || matches!(p.severity.as_deref(), Some("warning") | Some("critical") | Some("exceeded"))
     {
         tray::Status::Warn
     } else {
         tray::Status::Ok
+    }
+}
+
+fn status_label(s: tray::Status) -> &'static str {
+    match s {
+        tray::Status::Critical => "critical",
+        tray::Status::Warn => "warn",
+        tray::Status::Ok => "ok",
+        tray::Status::Unknown => "unknown",
     }
 }
 
@@ -182,7 +194,7 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
     let cfg = state.config.lock().unwrap().clone();
     let now = Utc::now();
 
-    let snapshot = match run_fetch(&state, &cfg, now).await {
+    let mut snapshot = match run_fetch(&state, &cfg, now).await {
         Ok(s) => s,
         Err(e) => {
             let plan = state.plan.lock().unwrap().clone();
@@ -197,19 +209,35 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
         }
     };
 
-    // Fire alerts (skip on error snapshots).
-    if snapshot.error.is_none() && cfg.notifications_enabled {
+    // Advance the alert latches and fire notifications (skip on error
+    // snapshots). Runs even with notifications off so the latched red
+    // state stays meaningful.
+    if snapshot.error.is_none() {
         let alerts = {
             let mut st = state.alerts.lock().unwrap();
-            st.evaluate(&snapshot.windows, &cfg)
-        };
-        let icon = notification_icon(&app);
-        for a in alerts {
-            let mut b = app.notification().builder().title(a.title).body(a.body);
-            if let Some(ref path) = icon {
-                b = b.icon(path.as_str());
+            let fired = st.evaluate(&snapshot.windows, &cfg, now.timestamp_millis());
+            for p in &mut snapshot.windows {
+                p.alert_engaged = st.proj_engaged(&p.kind, &p.scope_key);
             }
-            let _ = b.show();
+            fired
+        };
+
+        // Tray color is only known once engagement is set.
+        let mut status = tray::Status::Ok;
+        for p in &snapshot.windows {
+            status = worst(status, status_for(p, &cfg));
+        }
+        snapshot.tray_status = status_label(status).into();
+
+        if cfg.notifications_enabled {
+            let icon = notification_icon(&app);
+            for a in alerts {
+                let mut b = app.notification().builder().title(a.title).body(a.body);
+                if let Some(ref path) = icon {
+                    b = b.icon(path.as_str());
+                }
+                let _ = b.show();
+            }
         }
     }
 
@@ -264,22 +292,12 @@ async fn run_fetch(state: &AppState, cfg: &Config, now: DateTime<Utc>) -> Result
         .find(|p| p.kind == "session")
         .map(|p| p.percent)
         .unwrap_or(usage.five_hour.utilization);
-    let mut status = tray::Status::Ok;
-    for p in &projections {
-        status = worst(status, status_for(p, cfg));
-    }
-
     Ok(Snapshot {
         generated_at: now,
         plan: state.plan.lock().unwrap().clone(),
         tray_percent,
-        tray_status: match status {
-            tray::Status::Critical => "critical",
-            tray::Status::Warn => "warn",
-            tray::Status::Ok => "ok",
-            tray::Status::Unknown => "unknown",
-        }
-        .into(),
+        // Provisional: poll_once recomputes this once alert latches are set.
+        tray_status: status_label(tray::Status::Ok).into(),
         windows: projections,
         error: None,
     })
