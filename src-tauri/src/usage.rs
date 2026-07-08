@@ -58,12 +58,38 @@ pub struct SimpleWindow {
     pub resets_at: Option<DateTime<Utc>>,
 }
 
+/// Usage-based ("extra") billing pool — a monthly credit budget that kicks in
+/// once plan limits are hit. Amounts are integer minor units (e.g. cents),
+/// scaled by `decimal_places`. The endpoint gives no reset timestamp for it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExtraUsage {
+    #[serde(default)]
+    pub is_enabled: bool,
+    /// Monthly cap in minor units (e.g. 2500 = $25.00 at 2 decimal places).
+    #[serde(default)]
+    pub monthly_limit: Option<f64>,
+    /// Spent so far, minor units.
+    #[serde(default)]
+    pub used_credits: Option<f64>,
+    /// Percent of the monthly cap used (may carry decimals).
+    #[serde(default)]
+    pub utilization: f64,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub decimal_places: Option<u32>,
+    #[serde(default)]
+    pub disabled_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageResponse {
     #[serde(default)]
     pub five_hour: SimpleWindow,
     #[serde(default)]
     pub seven_day: SimpleWindow,
+    #[serde(default)]
+    pub extra_usage: Option<ExtraUsage>,
     #[serde(default)]
     pub limits: Vec<Limit>,
 }

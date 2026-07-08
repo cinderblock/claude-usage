@@ -25,6 +25,16 @@ warns only when that velocity is projected to hit the cap *before* the window
 resets (with a configurable lead time). The API's own `severity` and a
 near‑cap nudge are secondary signals.
 
+### Usage-based billing (opt-in)
+
+If you have usage-based ("extra") billing, tick **Usage-based billing** in
+Settings to show your monthly credit pool as its own window — spent vs. limit in
+dollars, percent used, and the same projection treatment (bar overshoot,
+likely-range band, projected spend by month end). The dollar limit is
+deliberately read-only here; a **Change limit ↗** link opens
+`claude.ai` to adjust it. The pool is anchored to the calendar-month boundary
+since the endpoint reports no reset time for it.
+
 ## How it reads usage
 
 It reuses the OAuth token Claude Code already stores at
@@ -67,7 +77,8 @@ npm run tauri build
 Stored at the app config dir (`config.json`). Editable from the popup's Settings:
 `poll_interval_secs` (120), `projection_margin_mins` (30), `velocity_window_hours`
 (6), `near_cap_pct` (95), `cap_confidence` (0.75), `alert_sustain_mins` (10),
-`use_api_severity`, `self_refresh_tokens`, `notifications_enabled`.
+`use_api_severity`, `self_refresh_tokens`, `notifications_enabled`,
+`show_extra_usage` (false).
 
 ### Projection uncertainty
 

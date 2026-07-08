@@ -194,6 +194,30 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
   snapshots retain the last good windows + generated_at so the UI shows stale bars under the
   banner instead of going blank; the "run Claude Code" hint only shows for token errors.
   Note: the loop reads `next_delay_secs` (set by poll_once) instead of the config interval.
+- **Usage-based billing window (user, 2026-07-08):** opt-in `show_extra_usage` (default off) surfaces
+  the `extra_usage` block from the endpoint as a `monthly_extra` window. Verified live shape:
+  `{is_enabled, monthly_limit, used_credits, utilization, currency:"USD",
+  decimal_places:2}` — amounts are integer MINOR units (cents), so major = amount/10^decimals
+  (e.g. 5000 → $50.00). Also a parallel `spend` block exists (richer, has severity) — we use
+  `extra_usage` for simplicity. No `resets_at` in the payload → anchored to the calendar-month
+  boundary (`next_month_start`, UTC first-of-next-month); window length nominal 30d. Display-only:
+  a `Projection.dollars {used,limit,currency,decimals}` (set in `build_projections`, not `project`)
+  drives the "$used / $limit · pct%" header + projected-$ line; a "Change limit ↗" button opens
+  `https://claude.ai/new#settings/usage` via `@tauri-apps/plugin-opener` `openUrl` (added
+  `opener:allow-open-url` capability). User is explicit: NO limit editing in-app, force claude.ai.
+  Refactored the per-window record+project into `project_window` so the billing path reuses it.
+- **Even-pace fallback bug found while adding monthly (2026-07-08):** the fallback fired whenever the
+  measured rate was ≤0.01, i.e. it treated a MEASURED-flat window as if there were no history and
+  extrapolated the since-start average → a front-loaded-but-now-idle window (esp. the 30d billing
+  pool) would perpetually project >100% and false-alarm. Fixed: even-pace fallback now requires
+  `rate_per_hour.is_none()` (genuinely too little history to fit); a measured flat/declining rate
+  projects flat (coasting). Aligns with the core philosophy ("under pace → no warning"). Guarded by
+  new test `measured_flat_high_usage_does_not_warn`. Existing tests all use climbing rates, unaffected.
+
+## Things not to do (additional)
+
+- Don't add in-app editing of the usage-based billing dollar limit — the user explicitly wants that
+  forced through claude.ai (`https://claude.ai/new#settings/usage`). Only the show/hide toggle.
 
 ## Progress log
 

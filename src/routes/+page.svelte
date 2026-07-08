@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import {
     getUsage,
     getConfig,
@@ -10,10 +11,13 @@
     testNotification,
     prettyKind,
     fmtHours,
+    fmtMoney,
     type Snapshot,
     type Projection,
     type Config,
   } from "$lib/usage";
+
+  const USAGE_SETTINGS_URL = "https://claude.ai/new#settings/usage";
 
   let snap = $state<Snapshot | null>(null);
   let cfg = $state<Config | null>(null);
@@ -150,6 +154,10 @@
         <input type="checkbox" bind:checked={cfg.notifications_enabled} onchange={saveCfg} />
         <span>Notifications</span>
       </label>
+      <label class="check" title="Show your usage-based billing pool as its own window. Change the dollar limit on claude.ai.">
+        <input type="checkbox" bind:checked={cfg.show_extra_usage} onchange={saveCfg} />
+        <span>Usage-based billing</span>
+      </label>
       <label class="check">
         <input type="checkbox" bind:checked={cfg.use_api_severity} onchange={saveCfg} />
         <span>Use API severity</span>
@@ -175,7 +183,15 @@
         <div class="win {lv}">
           <div class="win-head">
             <span class="name">{p.scope_label ?? prettyKind(p.kind)}</span>
-            <span class="pct">{p.percent.toFixed(0)}%</span>
+            {#if p.dollars}
+              <span class="pct">
+                {fmtMoney(p.dollars.used, p.dollars.currency, p.dollars.decimals)}
+                <span class="dim">/ {fmtMoney(p.dollars.limit, p.dollars.currency, p.dollars.decimals)}</span>
+                · {p.percent.toFixed(0)}%
+              </span>
+            {:else}
+              <span class="pct">{p.percent.toFixed(0)}%</span>
+            {/if}
           </div>
           <div class="bar">
             <div class="over-zone" style="left:{barX(100)}%"></div>
@@ -208,6 +224,16 @@
               {#if showProj && p.rate_per_hour != null && p.rate_per_hour > 0.01}
                 <span class="sub dim">· {fmtProjected(p)} by reset</span>
               {/if}
+            {/if}
+            {#if p.dollars}
+              {#if showProj && p.rate_per_hour != null && p.rate_per_hour > 0.01}
+                <span class="sub dim">
+                  · ~{fmtMoney((p.projected_final_pct / 100) * p.dollars.limit, p.dollars.currency, p.dollars.decimals)} projected
+                </span>
+              {/if}
+              <button class="link" onclick={() => openUrl(USAGE_SETTINGS_URL)} title="Change your limit on claude.ai">
+                Change limit ↗
+              </button>
             {/if}
           </div>
         </div>
@@ -380,6 +406,18 @@
   }
   .warn-text {
     color: #f0b429;
+  }
+  .link {
+    background: none;
+    border: none;
+    color: #6aa9ff;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 0;
+    margin-left: 6px;
+  }
+  .link:hover {
+    text-decoration: underline;
   }
   .foot {
     text-align: center;

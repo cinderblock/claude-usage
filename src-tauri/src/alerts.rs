@@ -208,6 +208,7 @@ mod tests {
             will_hit_wall: alert_worthy,
             alert_worthy,
             alert_engaged: false,
+            dollars: None,
             summary: "test".into(),
         }
     }

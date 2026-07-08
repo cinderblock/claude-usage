@@ -21,7 +21,15 @@ export interface Projection {
   will_hit_wall: boolean;
   alert_worthy: boolean;
   alert_engaged: boolean;
+  dollars: Dollars | null;
   summary: string;
+}
+
+export interface Dollars {
+  used: number;
+  limit: number;
+  currency: string;
+  decimals: number;
 }
 
 export interface Snapshot {
@@ -45,6 +53,7 @@ export interface Config {
   use_api_severity: boolean;
   self_refresh_tokens: boolean;
   notifications_enabled: boolean;
+  show_extra_usage: boolean;
 }
 
 export const getUsage = () => invoke<Snapshot | null>("get_usage");
@@ -63,6 +72,20 @@ export function prettyKind(kind: string): string {
       return "Weekly (model)";
     default:
       return kind.replace(/_/g, " ");
+  }
+}
+
+/** "$12.02" — a money amount with its currency symbol and fixed decimals. */
+export function fmtMoney(amount: number, currency: string, decimals: number): string {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    }).format(amount);
+  } catch {
+    return `${amount.toFixed(decimals)} ${currency}`;
   }
 }
 

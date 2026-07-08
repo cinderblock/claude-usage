@@ -13,10 +13,25 @@ use serde::Serialize;
 pub fn window_len_hours(kind: &str) -> f64 {
     if kind.starts_with("weekly") {
         7.0 * 24.0
+    } else if kind.starts_with("monthly") {
+        // Usage-based billing pool. Nominal 30 days; the projection uses the
+        // real reset timestamp for `time_to_reset`, so this only lightly
+        // affects the (day-one-only) even-pace fallback.
+        30.0 * 24.0
     } else {
         // "session" / five-hour
         5.0
     }
+}
+
+/// Dollar figures for a spend-based window (usage billing). Amounts are already
+/// scaled to major units (e.g. dollars); `decimals` is how many to render.
+#[derive(Debug, Clone, Serialize)]
+pub struct Dollars {
+    pub used: f64,
+    pub limit: f64,
+    pub currency: String,
+    pub decimals: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +77,9 @@ pub struct Projection {
     /// period (and until it's been clear that long). Drives the stable red
     /// tray/UI state. Set during alert evaluation, not by `project`.
     pub alert_engaged: bool,
+    /// Dollar figures for a spend-based window (usage billing). None for the
+    /// ordinary percentage windows. Set by the caller, not by `project`.
+    pub dollars: Option<Dollars>,
     /// Human one-liner for UI/notifications.
     pub summary: String,
 }
@@ -177,8 +195,12 @@ pub fn project(
     let rate_stderr = fit.as_ref().and_then(|f| f.stderr);
     let margin_hours = opts.margin_mins as f64 / 60.0;
 
-    // ETA + projected-final. Prefer measured velocity; fall back to even-pace
-    // extrapolation from window start when we lack a usable rate.
+    // ETA + projected-final. Prefer measured velocity. The even-pace fallback
+    // (extrapolate the since-start average) is only for when we have too little
+    // history to fit a rate at all — NOT when the fit measured a flat/declining
+    // rate. A measured-flat window means you're coasting and won't hit the
+    // wall, so falling back to the since-start average there would falsely warn
+    // a front-loaded-but-now-idle window (esp. the month-long billing pool).
     let mut eta_to_100_hours = None;
     let mut cap_eta = None;
     let mut projected_final_low_pct = None;
@@ -219,8 +241,9 @@ pub fn project(
                 }
             });
         }
-    } else if elapsed_frac > 0.02 {
-        // even-pace fallback
+    } else if rate_per_hour.is_none() && elapsed_frac > 0.02 {
+        // Even-pace fallback: too little history to fit a rate, so extrapolate
+        // the since-start average.
         let final_est = w.percent / elapsed_frac;
         projected_final_pct = final_est;
         if final_est > 100.0 {
@@ -233,6 +256,7 @@ pub fn project(
             }
         }
     } else {
+        // Measured flat/declining, or no signal at all → coasting to reset.
         projected_final_pct = w.percent;
     }
 
@@ -284,6 +308,7 @@ pub fn project(
         will_hit_wall,
         alert_worthy,
         alert_engaged: false,
+        dollars: None,
         summary,
     }
 }
@@ -342,6 +367,7 @@ pub fn pretty_kind(kind: &str) -> String {
         "session" => "5-hour".into(),
         "weekly_all" => "Weekly".into(),
         "weekly_scoped" => "Weekly (model)".into(),
+        "monthly_extra" => "Usage billing".into(),
         other => other.replace('_', " "),
     }
 }
@@ -467,6 +493,34 @@ mod tests {
         assert!(p.cap_probability.unwrap() > 0.99);
         let (lo, hi) = (p.projected_final_low_pct.unwrap(), p.projected_final_high_pct.unwrap());
         assert!(hi - lo < 1.0, "clean fit should give a tight band: {lo}–{hi}");
+    }
+
+    /// A window that's high but flat (front-loaded, now idle) must NOT warn,
+    /// even though the since-start average would extrapolate past 100%. The
+    /// even-pace fallback is reserved for when there's no measured rate.
+    #[test]
+    fn measured_flat_high_usage_does_not_warn() {
+        // 20% into a 30-day billing month, sitting at 80% and not moving.
+        let now = DateTime::parse_from_rfc3339("2026-07-07T00:00:00Z").unwrap().with_timezone(&Utc);
+        let resets_at = now + Duration::hours(24 * 24); // 80% of the way through 30d
+        let base = (now - Duration::hours(6)).timestamp_millis();
+        let samples = vec![
+            sample(0, base, 80.0),
+            sample(180, base, 80.0),
+            sample(360, base, 80.0),
+        ];
+        let w = WindowState {
+            kind: "monthly_extra",
+            scope_key: "all",
+            scope_label: None,
+            percent: 80.0,
+            severity: None,
+            resets_at: Some(resets_at),
+        };
+        let p = project(&w, &samples, now, &opts());
+        assert!(!p.will_hit_wall, "flat usage shouldn't project a wall: {}", p.summary);
+        assert!(!p.alert_worthy);
+        assert!((p.projected_final_pct - 80.0).abs() < 1.0, "flat → projects flat, got {}", p.projected_final_pct);
     }
 
     /// Noisy samples around the same mean burn as `mid_window_burst_alerts`:

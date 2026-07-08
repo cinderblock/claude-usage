@@ -105,52 +105,112 @@ fn worst(a: tray::Status, b: tray::Status) -> tray::Status {
     }
 }
 
+/// First day of the next calendar month at 00:00:00 UTC. Used as the reset
+/// anchor for the usage-billing pool, which the API reports without one.
+fn next_month_start(now: DateTime<Utc>) -> DateTime<Utc> {
+    use chrono::{Datelike, TimeZone};
+    let (y, m) = (now.year(), now.month());
+    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    Utc.with_ymd_and_hms(ny, nm, 1, 0, 0, 0).single().unwrap_or(now)
+}
+
+/// Record one sample and project a single window from its recent history.
+fn project_window(
+    state: &AppState,
+    now: DateTime<Utc>,
+    cfg: &Config,
+    kind: &str,
+    scope_key: &str,
+    scope_label: Option<String>,
+    percent: f64,
+    severity: Option<String>,
+    resets_at: Option<DateTime<Utc>>,
+) -> Projection {
+    let window_len_h = metrics::window_len_hours(kind);
+    let window_start_ms = resets_at
+        .map(|r| (r - Duration::hours(window_len_h as i64)).timestamp_millis())
+        .unwrap_or_else(|| (now - Duration::hours(window_len_h as i64)).timestamp_millis());
+
+    // Record this sample, then read the current window's history for velocity.
+    let _ = state.history.insert(
+        now.timestamp_millis(),
+        kind,
+        scope_key,
+        percent,
+        resets_at.map(|r| r.timestamp_millis()),
+    );
+
+    // Only look back within the configured velocity window AND the current
+    // window instance (avoid mixing a prior, since-reset series).
+    let vel_start = (now - Duration::minutes((cfg.velocity_window_hours * 60.0) as i64)).timestamp_millis();
+    let since = window_start_ms.max(vel_start);
+    let samples = state.history.samples_since(kind, scope_key, since).unwrap_or_default();
+
+    let w = WindowState {
+        kind,
+        scope_key,
+        scope_label,
+        percent,
+        severity,
+        resets_at,
+    };
+    let opts = metrics::ProjectOpts {
+        margin_mins: cfg.projection_margin_mins,
+        min_elapsed_frac: cfg.min_elapsed_frac,
+        well_beyond_pct: cfg.well_beyond_pct,
+        cap_confidence: cfg.cap_confidence,
+    };
+    metrics::project(&w, &samples, now, &opts)
+}
+
 /// Build the set of projections from a usage response + history.
 fn build_projections(state: &AppState, usage: &usage::UsageResponse, now: DateTime<Utc>, cfg: &Config) -> Vec<Projection> {
     let mut projections = Vec::new();
     for l in &usage.limits {
-        let scope_key = usage::Scope::key(&l.scope);
-        let scope_label = usage::Scope::label(&l.scope);
-        let window_len_h = metrics::window_len_hours(&l.kind);
-        let window_start_ms = l
-            .resets_at
-            .map(|r| (r - Duration::hours(window_len_h as i64)).timestamp_millis())
-            .unwrap_or_else(|| (now - Duration::hours(window_len_h as i64)).timestamp_millis());
-
-        // Record this sample, then read the current window's history for velocity.
-        let _ = state.history.insert(
-            now.timestamp_millis(),
+        projections.push(project_window(
+            state,
+            now,
+            cfg,
             &l.kind,
-            &scope_key,
+            &usage::Scope::key(&l.scope),
+            usage::Scope::label(&l.scope),
             l.percent,
-            l.resets_at.map(|r| r.timestamp_millis()),
-        );
-
-        // Only look back within the configured velocity window AND the current
-        // window instance (avoid mixing a prior, since-reset series).
-        let vel_start = (now - Duration::minutes((cfg.velocity_window_hours * 60.0) as i64)).timestamp_millis();
-        let since = window_start_ms.max(vel_start);
-        let samples = state
-            .history
-            .samples_since(&l.kind, &scope_key, since)
-            .unwrap_or_default();
-
-        let w = WindowState {
-            kind: &l.kind,
-            scope_key: &scope_key,
-            scope_label,
-            percent: l.percent,
-            severity: l.severity.clone(),
-            resets_at: l.resets_at,
-        };
-        let opts = metrics::ProjectOpts {
-            margin_mins: cfg.projection_margin_mins,
-            min_elapsed_frac: cfg.min_elapsed_frac,
-            well_beyond_pct: cfg.well_beyond_pct,
-            cap_confidence: cfg.cap_confidence,
-        };
-        projections.push(metrics::project(&w, &samples, now, &opts));
+            l.severity.clone(),
+            l.resets_at,
+        ));
     }
+
+    // Usage-based billing pool, opt-in via config. Modeled as a monthly window
+    // anchored to the calendar-month boundary (the API gives no reset time).
+    if cfg.show_extra_usage {
+        if let Some(eu) = usage.extra_usage.as_ref().filter(|e| e.is_enabled) {
+            let resets_at = next_month_start(now);
+            let mut p = project_window(
+                state,
+                now,
+                cfg,
+                "monthly_extra",
+                "all",
+                Some(metrics::pretty_kind("monthly_extra")),
+                eu.utilization,
+                None,
+                Some(resets_at),
+            );
+            // Attach dollar figures for display (minor units → major).
+            if let (Some(limit), Some(used)) = (eu.monthly_limit, eu.used_credits) {
+                let decimals = eu.decimal_places.unwrap_or(2);
+                let scale = 10f64.powi(decimals as i32);
+                p.dollars = Some(metrics::Dollars {
+                    used: used / scale,
+                    limit: limit / scale,
+                    currency: eu.currency.clone().unwrap_or_else(|| "USD".into()),
+                    decimals,
+                });
+            }
+            projections.push(p);
+        }
+    }
+
     projections
 }
 

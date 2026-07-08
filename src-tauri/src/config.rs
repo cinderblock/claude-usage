@@ -37,6 +37,10 @@ pub struct Config {
     pub self_refresh_tokens: bool,
     /// Master switch for OS notifications.
     pub notifications_enabled: bool,
+    /// Show the usage-based ("extra") billing pool as its own window, with the
+    /// same projection treatment. Display-only opt-in; the dollar limit itself
+    /// is changed on claude.ai, not here.
+    pub show_extra_usage: bool,
 }
 
 impl Default for Config {
@@ -53,6 +57,7 @@ impl Default for Config {
             use_api_severity: true,
             self_refresh_tokens: true,
             notifications_enabled: true,
+            show_extra_usage: false,
         }
     }
 }
