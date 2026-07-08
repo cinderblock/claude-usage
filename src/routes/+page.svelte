@@ -1,14 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import SettingsPanel from "$lib/SettingsPanel.svelte";
   import {
     getUsage,
     getConfig,
-    setConfig,
     refreshNow,
-    testNotification,
+    openSettingsWindow,
     prettyKind,
     fmtHours,
     fmtMoney,
@@ -19,21 +19,31 @@
 
   const USAGE_SETTINGS_URL = "https://claude.ai/new#settings/usage";
 
+  // This component is the SvelteKit root page for BOTH windows (the popup and
+  // the standalone Settings window, which also loads "/") — branch on which
+  // one we're in rather than routing, since ssr:false + the SPA fallback give
+  // every window the same shell.
+  let isSettingsWindow = $state(false);
+
   let snap = $state<Snapshot | null>(null);
   let cfg = $state<Config | null>(null);
-  let showSettings = $state(false);
   let now = $state(Date.now());
   let refreshing = $state(false);
-  let autostart = $state(false);
 
   onMount(() => {
+    isSettingsWindow = getCurrentWindow().label === "settings";
+    if (isSettingsWindow) return; // SettingsPanel owns its own lifecycle
+
     getUsage().then((s) => (snap = s));
     getConfig().then((c) => (cfg = c));
-    isEnabled().then((v) => (autostart = v)).catch(() => {});
-    const un = listen<Snapshot>("usage-updated", (e) => (snap = e.payload));
+    const unUsage = listen<Snapshot>("usage-updated", (e) => (snap = e.payload));
+    // Settings may be edited live in the other window; pick it up without
+    // waiting for the next poll.
+    const unCfg = listen<Config>("config-updated", (e) => (cfg = e.payload));
     const tick = setInterval(() => (now = Date.now()), 1000);
     return () => {
-      un.then((f) => f());
+      unUsage.then((f) => f());
+      unCfg.then((f) => f());
       clearInterval(tick);
     };
   });
@@ -58,11 +68,14 @@
     return !cfg || p.elapsed_frac >= cfg.min_elapsed_frac;
   }
 
-  // Bars span 0–150% so an overshooting projection stays visible;
-  // the 100% cap sits at the 2/3 mark.
-  const BAR_MAX = 150;
-  function barX(v: number): number {
-    return (Math.min(Math.max(v, 0), BAR_MAX) / BAR_MAX) * 100;
+  // Bars span 0–150% so an overshooting projection stays visible, with the
+  // 100% cap at the 2/3 mark — EXCEPT the usage-billing pool, which has a
+  // hard $ cap, so its bar tops out at 100% like a normal meter.
+  function barMax(p: Projection): number {
+    return p.dollars ? 100 : 150;
+  }
+  function barX(v: number, max: number): number {
+    return (Math.min(Math.max(v, 0), max) / max) * 100;
   }
 
   /** "~118%" or "~95–140%" when the fit gives a meaningful spread. */
@@ -82,177 +95,120 @@
     }
   }
 
-  async function saveCfg() {
-    if (cfg) await setConfig($state.snapshot(cfg));
-  }
-
-  async function toggleAutostart() {
-    try {
-      if (autostart) await enable();
-      else await disable();
-    } catch (e) {
-      // revert on failure
-      autostart = !autostart;
-    }
-  }
 </script>
 
-<div class="app" data-tauri-drag-region>
-  <header data-tauri-drag-region>
-    <div class="title">Claude Usage</div>
-    {#if snap?.plan}<span class="plan">{snap.plan}</span>{/if}
-    <div class="spacer"></div>
-    <button class="icon" title="Refresh" onclick={doRefresh} class:spin={refreshing}>⟳</button>
-    <button class="icon" title="Settings" onclick={() => (showSettings = !showSettings)}>⚙</button>
-  </header>
+{#if isSettingsWindow}
+  <SettingsPanel />
+{:else}
+  <div class="app" data-tauri-drag-region>
+    <header data-tauri-drag-region>
+      <div class="title">Claude Usage</div>
+      {#if snap?.plan}<span class="plan">{snap.plan}</span>{/if}
+      <div class="spacer"></div>
+      <button class="icon" title="Refresh" onclick={doRefresh} class:spin={refreshing}>⟳</button>
+      <button class="icon" title="Settings" onclick={() => openSettingsWindow()}>⚙</button>
+    </header>
 
-  {#if snap?.error}
-    <div class="error">
-      <strong>Can't read usage</strong>
-      <div>{snap.error}</div>
-      {#if snap.error.toLowerCase().includes("token")}
-        <div class="hint">If the token expired, run Claude Code once to refresh it.</div>
-      {/if}
-    </div>
-  {/if}
-
-  {#if showSettings && cfg}
-    <div class="settings">
-      <label>
-        <span>Poll interval (s)</span>
-        <input type="number" min="30" step="30" bind:value={cfg.poll_interval_secs} onchange={saveCfg} />
-      </label>
-      <label title="Only warn when projected to hit the cap at least this many minutes before the window resets. Small gaps are noise.">
-        <span>Warn if capping ≥ (min) early</span>
-        <input type="number" min="0" step="15" bind:value={cfg.projection_margin_mins} onchange={saveCfg} />
-      </label>
-      <label>
-        <span>Velocity window (h)</span>
-        <input type="number" min="1" step="0.5" bind:value={cfg.velocity_window_hours} onchange={saveCfg} />
-      </label>
-      <label title="Suppress projection warnings until this fraction of the window has elapsed">
-        <span>Quiet early phase (0–1)</span>
-        <input type="number" min="0" max="1" step="0.05" bind:value={cfg.min_elapsed_frac} onchange={saveCfg} />
-      </label>
-      <label title="…but warn anyway once usage is already this high">
-        <span>Well-beyond (%)</span>
-        <input type="number" min="0" max="100" bind:value={cfg.well_beyond_pct} onchange={saveCfg} />
-      </label>
-      <label>
-        <span>Near-cap nudge (%)</span>
-        <input type="number" min="50" max="100" bind:value={cfg.near_cap_pct} onchange={saveCfg} />
-      </label>
-      <label title="Only alert when the odds of capping early are at least this. Uses the spread of the recent burn-rate fit, not just its average.">
-        <span>Alert confidence (0–1)</span>
-        <input type="number" min="0" max="1" step="0.05" bind:value={cfg.cap_confidence} onchange={saveCfg} />
-      </label>
-      <label title="An alert must hold continuously this long before it notifies, and be clear this long before it re-arms. Debounces noisy projections.">
-        <span>Sustain before alert (min)</span>
-        <input type="number" min="0" step="1" bind:value={cfg.alert_sustain_mins} onchange={saveCfg} />
-      </label>
-      <label class="check">
-        <input type="checkbox" bind:checked={cfg.notifications_enabled} onchange={saveCfg} />
-        <span>Notifications</span>
-      </label>
-      <label class="check" title="Show your usage-based billing pool as its own window. Change the dollar limit on claude.ai.">
-        <input type="checkbox" bind:checked={cfg.show_extra_usage} onchange={saveCfg} />
-        <span>Usage-based billing</span>
-      </label>
-      <label class="check">
-        <input type="checkbox" bind:checked={cfg.use_api_severity} onchange={saveCfg} />
-        <span>Use API severity</span>
-      </label>
-      <label class="check">
-        <input type="checkbox" bind:checked={cfg.self_refresh_tokens} onchange={saveCfg} />
-        <span>Self-refresh token</span>
-      </label>
-      <button class="test-btn" onclick={() => testNotification()}>Send test notification</button>
-    </div>
-  {/if}
-
-  <main>
-    {#if !snap}
-      <div class="loading">Loading…</div>
-    {:else}
-      {#each snap.windows as p (p.kind + p.scope_key)}
-        {@const lv = level(p)}
-        {@const ttr = hoursToReset(p)}
-        {@const showProj = enoughSignal(p) && p.projected_final_pct > p.percent + 0.5}
-        {@const lo = p.projected_final_low_pct}
-        {@const hi = p.projected_final_high_pct}
-        <div class="win {lv}">
-          <div class="win-head">
-            <span class="name">{p.scope_label ?? prettyKind(p.kind)}</span>
-            {#if p.dollars}
-              <span class="pct">
-                {fmtMoney(p.dollars.used, p.dollars.currency, p.dollars.decimals)}
-                <span class="dim">/ {fmtMoney(p.dollars.limit, p.dollars.currency, p.dollars.decimals)}</span>
-                · {p.percent.toFixed(0)}%
-              </span>
-            {:else}
-              <span class="pct">{p.percent.toFixed(0)}%</span>
-            {/if}
-          </div>
-          <div class="bar">
-            <div class="over-zone" style="left:{barX(100)}%"></div>
-            <div class="fill" style="width:{barX(p.percent)}%"></div>
-            {#if showProj}
-              <div
-                class="proj-fill"
-                style="left:{barX(p.percent)}%; width:{barX(p.projected_final_pct) - barX(p.percent)}%"
-              ></div>
-              {#if lo != null && hi != null && hi - lo >= 2}
-                <div
-                  class="band"
-                  style="left:{barX(lo)}%; width:{Math.max(barX(hi) - barX(lo), 0.5)}%"
-                  title="likely range at reset (10–90%)"
-                ></div>
-              {/if}
-              <div class="proj-marker" style="left:{barX(p.projected_final_pct)}%" title="projected at reset"></div>
-            {/if}
-            <div class="tick-100" style="left:{barX(100)}%"></div>
-          </div>
-          <div class="meta">
-            {#if p.alert_engaged}
-              <span class="warn-text">⚠ {p.summary}</span>
-            {:else if p.will_hit_wall}
-              <span class="sub soft">
-                on pace to cap early{#if p.cap_probability != null}&nbsp;(~{(p.cap_probability * 100).toFixed(0)}% odds){/if} — monitoring · resets in {fmtHours(ttr)}
-              </span>
-            {:else}
-              <span class="sub">resets in {fmtHours(ttr)}</span>
-              {#if showProj && p.rate_per_hour != null && p.rate_per_hour > 0.01}
-                <span class="sub dim">· {fmtProjected(p)} by reset</span>
-              {/if}
-            {/if}
-            {#if p.dollars}
-              {#if showProj && p.rate_per_hour != null && p.rate_per_hour > 0.01}
-                <span class="sub dim">
-                  · ~{fmtMoney((p.projected_final_pct / 100) * p.dollars.limit, p.dollars.currency, p.dollars.decimals)} projected
-                </span>
-              {/if}
-              <button class="link" onclick={() => openUrl(USAGE_SETTINGS_URL)} title="Change your limit on claude.ai">
-                Change limit ↗
-              </button>
-            {/if}
-          </div>
-        </div>
-      {/each}
-      <div class="foot">
-        updated {fmtHours((now - new Date(snap.generated_at).getTime()) / 3_600_000)} ago
+    {#if snap?.error}
+      <div class="error">
+        <strong>Can't read usage</strong>
+        <div>{snap.error}</div>
+        {#if snap.error.toLowerCase().includes("token")}
+          <div class="hint">If the token expired, run Claude Code once to refresh it.</div>
+        {/if}
       </div>
     {/if}
-  </main>
-</div>
+
+    <main>
+      {#if !snap}
+        <div class="loading">Loading…</div>
+      {:else}
+        {#each snap.windows as p (p.kind + p.scope_key)}
+          {@const lv = level(p)}
+          {@const ttr = hoursToReset(p)}
+          {@const max = barMax(p)}
+          {@const showProj = enoughSignal(p) && p.projected_final_pct > p.percent + 0.5}
+          {@const lo = p.projected_final_low_pct}
+          {@const hi = p.projected_final_high_pct}
+          <div class="win {lv}">
+            <div class="win-head">
+              <span class="name">{p.scope_label ?? prettyKind(p.kind)}</span>
+              {#if p.dollars}
+                <span class="pct">
+                  {fmtMoney(p.dollars.used, p.dollars.currency, p.dollars.decimals)}
+                  <span class="dim">/ {fmtMoney(p.dollars.limit, p.dollars.currency, p.dollars.decimals)}</span>
+                  · {p.percent.toFixed(0)}%
+                </span>
+              {:else}
+                <span class="pct">{p.percent.toFixed(0)}%</span>
+              {/if}
+            </div>
+            <div class="bar">
+              {#if !p.dollars}
+                <div class="over-zone" style="left:{barX(100, max)}%"></div>
+              {/if}
+              <div class="fill" style="width:{barX(p.percent, max)}%"></div>
+              {#if showProj}
+                <div
+                  class="proj-fill"
+                  style="left:{barX(p.percent, max)}%; width:{barX(p.projected_final_pct, max) - barX(p.percent, max)}%"
+                ></div>
+                {#if lo != null && hi != null && hi - lo >= 2}
+                  <div
+                    class="band"
+                    style="left:{barX(lo, max)}%; width:{Math.max(barX(hi, max) - barX(lo, max), 0.5)}%"
+                    title="likely range at reset (10–90%)"
+                  ></div>
+                {/if}
+                <div class="proj-marker" style="left:{barX(p.projected_final_pct, max)}%" title="projected at reset"></div>
+              {/if}
+              {#if !p.dollars}
+                <div class="tick-100" style="left:{barX(100, max)}%"></div>
+              {/if}
+            </div>
+            <div class="meta">
+              {#if p.alert_engaged}
+                <span class="warn-text">⚠ {p.summary}</span>
+              {:else if p.will_hit_wall}
+                <span class="sub soft">
+                  on pace to cap early{#if p.cap_probability != null}&nbsp;(~{(p.cap_probability * 100).toFixed(0)}% odds){/if} — monitoring · resets in {fmtHours(ttr)}
+                </span>
+              {:else}
+                <span class="sub">resets in {fmtHours(ttr)}</span>
+                {#if showProj && !p.dollars && p.rate_per_hour != null && p.rate_per_hour > 0.01}
+                  <span class="sub dim">· {fmtProjected(p)} by reset</span>
+                {/if}
+              {/if}
+              {#if p.dollars}
+                {#if showProj && p.rate_per_hour != null && p.rate_per_hour > 0.01}
+                  <span class="sub dim">
+                    · ~{fmtMoney((p.projected_final_pct / 100) * p.dollars.limit, p.dollars.currency, p.dollars.decimals)} projected
+                  </span>
+                {/if}
+                <button class="link" onclick={() => openUrl(USAGE_SETTINGS_URL)} title="Change your limit on claude.ai">
+                  Change limit ↗
+                </button>
+              {/if}
+            </div>
+          </div>
+        {/each}
+        <div class="foot">
+          updated {fmtHours((now - new Date(snap.generated_at).getTime()) / 3_600_000)} ago
+        </div>
+      {/if}
+    </main>
+  </div>
+{/if}
 
 <style>
+  /* Shared by both windows (this component is the SvelteKit root page for
+     each) — kept minimal so the resizable, scrollable Settings window isn't
+     clipped by rules meant for the frameless popup below. */
   :global(html),
   :global(body) {
     margin: 0;
     padding: 0;
     background: transparent;
-    overflow: hidden;
-    user-select: none;
   }
   .app {
     font-family: "Segoe UI", system-ui, sans-serif;
@@ -262,6 +218,8 @@
     display: flex;
     flex-direction: column;
     font-size: 13px;
+    overflow: hidden;
+    user-select: none;
   }
   header {
     display: flex;
@@ -441,44 +399,5 @@
     text-align: center;
     color: #9aa0a6;
     padding: 30px;
-  }
-  .settings {
-    padding: 10px 12px;
-    border-bottom: 1px solid #2c3038;
-    display: grid;
-    gap: 6px;
-  }
-  .settings label {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    font-size: 12px;
-    color: #c7cbd1;
-  }
-  .settings label.check {
-    justify-content: flex-start;
-  }
-  .test-btn {
-    margin-top: 4px;
-    background: #2c3038;
-    border: 1px solid #3a3f48;
-    color: #e8eaed;
-    border-radius: 5px;
-    padding: 6px 8px;
-    font-size: 12px;
-    cursor: pointer;
-  }
-  .test-btn:hover {
-    background: #363b44;
-  }
-  .settings input[type="number"] {
-    width: 70px;
-    background: #12151a;
-    border: 1px solid #2c3038;
-    color: #e8eaed;
-    border-radius: 4px;
-    padding: 3px 6px;
-    font-size: 12px;
   }
 </style>

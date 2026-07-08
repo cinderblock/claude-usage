@@ -23,6 +23,21 @@
         "skipTaskbar": true,
         "visible": false,
         "center": false
+      },
+      {
+        "label": "settings",
+        "title": "Claude Usage — Settings",
+        "width": 380,
+        "height": 520,
+        "minWidth": 340,
+        "minHeight": 400,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

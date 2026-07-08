@@ -180,35 +180,36 @@ fn build_projections(state: &AppState, usage: &usage::UsageResponse, now: DateTi
         ));
     }
 
-    // Usage-based billing pool, opt-in via config. Modeled as a monthly window
-    // anchored to the calendar-month boundary (the API gives no reset time).
-    if cfg.show_extra_usage {
-        if let Some(eu) = usage.extra_usage.as_ref().filter(|e| e.is_enabled) {
-            let resets_at = next_month_start(now);
-            let mut p = project_window(
-                state,
-                now,
-                cfg,
-                "monthly_extra",
-                "all",
-                Some(metrics::pretty_kind("monthly_extra")),
-                eu.utilization,
-                None,
-                Some(resets_at),
-            );
-            // Attach dollar figures for display (minor units → major).
-            if let (Some(limit), Some(used)) = (eu.monthly_limit, eu.used_credits) {
-                let decimals = eu.decimal_places.unwrap_or(2);
-                let scale = 10f64.powi(decimals as i32);
-                p.dollars = Some(metrics::Dollars {
-                    used: used / scale,
-                    limit: limit / scale,
-                    currency: eu.currency.clone().unwrap_or_else(|| "USD".into()),
-                    decimals,
-                });
-            }
-            projections.push(p);
+    // Usage-based billing pool. Shown whenever it's enabled on the account
+    // (extra_usage.is_enabled) — same as every other window, no separate
+    // display toggle. Enabling/disabling the pool itself is done on claude.ai;
+    // this app only ever reads its state. Modeled as a monthly window anchored
+    // to the calendar-month boundary (the API gives no reset time).
+    if let Some(eu) = usage.extra_usage.as_ref().filter(|e| e.is_enabled) {
+        let resets_at = next_month_start(now);
+        let mut p = project_window(
+            state,
+            now,
+            cfg,
+            "monthly_extra",
+            "all",
+            Some(metrics::pretty_kind("monthly_extra")),
+            eu.utilization,
+            None,
+            Some(resets_at),
+        );
+        // Attach dollar figures for display (minor units → major).
+        if let (Some(limit), Some(used)) = (eu.monthly_limit, eu.used_credits) {
+            let decimals = eu.decimal_places.unwrap_or(2);
+            let scale = 10f64.powi(decimals as i32);
+            p.dollars = Some(metrics::Dollars {
+                used: used / scale,
+                limit: limit / scale,
+                currency: eu.currency.clone().unwrap_or_else(|| "USD".into()),
+                decimals,
+            });
         }
+        projections.push(p);
     }
 
     projections
@@ -230,6 +231,7 @@ fn build_menu(app: &tauri::AppHandle, snapshot: &Snapshot) -> tauri::Result<Menu
     let sep1 = PredefinedMenuItem::separator(app)?;
     let refresh = MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open window", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
@@ -240,6 +242,7 @@ fn build_menu(app: &tauri::AppHandle, snapshot: &Snapshot) -> tauri::Result<Menu
     refs.push(&sep1);
     refs.push(&refresh);
     refs.push(&open);
+    refs.push(&settings);
     refs.push(&sep2);
     refs.push(&quit);
 
@@ -489,9 +492,20 @@ fn test_notification(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_config(state: tauri::State<'_, Arc<AppState>>, config: Config) -> Result<(), String> {
+fn set_config(app: tauri::AppHandle, state: tauri::State<'_, Arc<AppState>>, config: Config) -> Result<(), String> {
     config.save(&state.config_dir).map_err(|e| e.to_string())?;
-    *state.config.lock().unwrap() = config;
+    *state.config.lock().unwrap() = config.clone();
+    // Let any other open window (e.g. the main popup, if Settings is edited
+    // live) pick up the change without waiting for its own next poll.
+    let _ = app.emit("config-updated", &config);
+    Ok(())
+}
+
+#[tauri::command]
+fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    let win = app.get_webview_window("settings").ok_or("settings window missing")?;
+    win.show().map_err(|e| e.to_string())?;
+    win.set_focus().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -530,14 +544,20 @@ pub fn run() {
             refresh_now,
             get_config,
             set_config,
-            test_notification
+            test_notification,
+            open_settings_window
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
+                // Hide, don't destroy: both windows reopen instantly next time
+                // and the app keeps running via the tray.
                 let _ = window.hide();
                 api.prevent_close();
             }
-            tauri::WindowEvent::Focused(false) => {
+            // Only the frameless popup hides on blur; Settings is a normal
+            // window a user may want to leave open while referencing values
+            // elsewhere.
+            tauri::WindowEvent::Focused(false) if window.label() == "main" => {
                 let _ = window.hide();
             }
             _ => {}
@@ -572,6 +592,7 @@ pub fn run() {
                 &[
                     &MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?,
                     &MenuItem::with_id(app, "open", "Open window", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?,
                     &PredefinedMenuItem::separator(app)?,
                     &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
                 ],
@@ -593,6 +614,12 @@ pub fn run() {
                         }
                     }
                     "open" => toggle_window(app),
+                    "settings" => {
+                        if let Some(win) = app.get_webview_window("settings") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })

@@ -194,18 +194,30 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
   snapshots retain the last good windows + generated_at so the UI shows stale bars under the
   banner instead of going blank; the "run Claude Code" hint only shows for token errors.
   Note: the loop reads `next_delay_secs` (set by poll_once) instead of the config interval.
-- **Usage-based billing window (user, 2026-07-08):** opt-in `show_extra_usage` (default off) surfaces
-  the `extra_usage` block from the endpoint as a `monthly_extra` window. Verified live shape:
-  `{is_enabled, monthly_limit, used_credits, utilization, currency:"USD",
-  decimal_places:2}` — amounts are integer MINOR units (cents), so major = amount/10^decimals
-  (e.g. 5000 → $50.00). Also a parallel `spend` block exists (richer, has severity) — we use
-  `extra_usage` for simplicity. No `resets_at` in the payload → anchored to the calendar-month
-  boundary (`next_month_start`, UTC first-of-next-month); window length nominal 30d. Display-only:
-  a `Projection.dollars {used,limit,currency,decimals}` (set in `build_projections`, not `project`)
-  drives the "$used / $limit · pct%" header + projected-$ line; a "Change limit ↗" button opens
-  `https://claude.ai/new#settings/usage` via `@tauri-apps/plugin-opener` `openUrl` (added
-  `opener:allow-open-url` capability). User is explicit: NO limit editing in-app, force claude.ai.
-  Refactored the per-window record+project into `project_window` so the billing path reuses it.
+- **Usage-based billing window (user, 2026-07-08):** surfaces the `extra_usage` block from the
+  endpoint as a `monthly_extra` window whenever it's enabled on the account (`extra_usage.is_enabled`)
+  — same as every other window, no app-level display toggle. First attempt built a `show_extra_usage`
+  config checkbox that only gated OUR display; user corrected: they'd interpreted the original ask
+  ("a checkbox to enable usage based billing") as a checkbox that flips billing on/off on the
+  account itself. Investigated: that would need a write call to an undiscovered endpoint — the one
+  verified endpoint (`GET /oauth/usage`) is read-only, and the account's own `spend.can_toggle` came
+  back `false` in the captured response, suggesting the OAuth CLI token may not have permission to
+  toggle it remotely regardless. Asked the user how to proceed (capture the real request via browser,
+  supply it directly, or skip the API call); answer: skip it entirely — enable/disable stays on
+  claude.ai, this app only ever reads `is_enabled` and shows/hides accordingly. Reverted the checkbox.
+  Verified live shape: `{is_enabled, monthly_limit, used_credits, utilization,
+  currency:"USD", decimal_places:2}` — amounts are integer MINOR units (cents), so major =
+  amount/10^decimals (e.g. 5000 → $50.00). A parallel `spend` block also exists (richer, has
+  severity + the `can_toggle` flag) — we use `extra_usage` for simplicity. No `resets_at` in the
+  payload → anchored to the calendar-month boundary (`next_month_start`, UTC first-of-next-month);
+  window length nominal 30d. Display-only: a `Projection.dollars {used,limit,currency,decimals}`
+  (set in `build_projections`, not `project`) drives the "$used / $limit · pct%" header + projected-$
+  line; a "Change limit ↗" button opens `https://claude.ai/new#settings/usage` via
+  `@tauri-apps/plugin-opener` `openUrl` (added `opener:allow-open-url` capability). NO limit editing
+  in-app, forced through claude.ai. Refactored the per-window record+project into `project_window` so
+  the billing path reuses it. Its bar caps at 100% (real dollar ceiling, not an overshootable rolling
+  window) — `barMax(p)` in `+page.svelte` returns 100 when `p.dollars` is set, 150 otherwise; the
+  over-zone/100%-tick decorations (meaningful only past-100 territory) are skipped for dollar rows.
 - **Even-pace fallback bug found while adding monthly (2026-07-08):** the fallback fired whenever the
   measured rate was ≤0.01, i.e. it treated a MEASURED-flat window as if there were no history and
   extrapolated the since-start average → a front-loaded-but-now-idle window (esp. the 30d billing
@@ -214,10 +226,40 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
   projects flat (coasting). Aligns with the core philosophy ("under pace → no warning"). Guarded by
   new test `measured_flat_high_usage_does_not_warn`. Existing tests all use climbing rates, unaffected.
 
+- **Settings moved to its own window (user, 2026-07-08):** was an inline collapsible panel in the
+  popup; user wants a real separate window. Added a second static window `settings` in
+  `tauri.conf.json` (resizable, native decorations/title bar, hidden at startup,
+  centered). Since the frontend is SPA-only (`ssr=false` + adapter-static fallback shell — no
+  per-route prerendering worth relying on), didn't create a `/settings` SvelteKit route; both windows
+  load the same root page and `+page.svelte` branches on `getCurrentWindow().label === "settings"` to
+  either render the popup or delegate entirely to the new `src/lib/SettingsPanel.svelte` (which owns
+  its own `getConfig`/`setConfig`/autostart/test-notification lifecycle — separate window = separate
+  JS context, no shared state). Added Tauri command `open_settings_window` (show+focus) invoked from
+  the popup's gear icon and wired into the tray's right-click menu ("Settings" entry, matching the
+  original design doc's surface list). `set_config` now takes `app: AppHandle` and emits
+  `config-updated` after saving so the popup's own `cfg` (used for its `level()`/`enoughSignal()` bar
+  logic) updates live if both windows are open, instead of waiting for the next poll. Window-event
+  guard: `Focused(false)` → hide is now `main`-only (settings is a normal window someone may want to
+  leave open); `CloseRequested` → hide (not destroy) stays global for both. Had to loosen the shared
+  `:global(html,body){overflow:hidden;user-select:none}` reset in `+page.svelte`'s `<style>` (it's
+  compiled into both windows since both mount this same component) — moved `overflow:hidden` +
+  `user-select:none` onto `.app` (the popup only) so the resizable Settings window can actually
+  scroll/select text. Added `"settings"` to the `default.json` capability's `windows` array.
+  **Gotcha:** tried adding `"theme": "dark"` per-window in `tauri.conf.json` for a dark native title
+  bar on Settings — this Tauri version's config schema (`gen/schemas/windows-schema.json`) has no
+  `theme` property at all (build fails: "not valid under any of the schemas"), only a runtime
+  `window.set_theme()` API. Dropped it (cosmetic only, not requested) rather than chase the Rust API.
+
 ## Things not to do (additional)
 
-- Don't add in-app editing of the usage-based billing dollar limit — the user explicitly wants that
-  forced through claude.ai (`https://claude.ai/new#settings/usage`). Only the show/hide toggle.
+- Don't add in-app editing of the usage-based billing dollar limit, OR an in-app toggle for
+  enabling/disabling the billing pool itself — both are account-level billing decisions the user
+  wants forced through claude.ai (`https://claude.ai/new#settings/usage`). This app only ever reads
+  `extra_usage.is_enabled` and displays accordingly.
+- Don't call undocumented/undiscovered Anthropic endpoints that mutate account state (billing
+  toggles, limit changes, etc.) without either a user-supplied verified request or watching the user
+  perform the action themselves to capture it. The read-only `/oauth/usage` endpoint is the only one
+  verified so far; guessing at write endpoints for a real billing account is not an acceptable risk.
 
 ## Progress log
 

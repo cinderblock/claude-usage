@@ -13,7 +13,9 @@ check where you stand.
   projection line. Bars span 0–150% with the cap marked at the 2/3 point, so an
   overshooting projection (ghost fill + marker, with a likely‑range band) stays
   visible past 100%.
-- Right‑click → a menu breakdown of every window + Refresh / Open / Quit.
+- Right‑click → a menu breakdown of every window + Refresh / Open / Settings / Quit.
+- A gear icon (or the tray's **Settings** menu item) opens Settings in its own
+  resizable window, separate from the popup.
 - Native notifications when a window is **projected to run out before it resets**.
 
 ### Alerting is velocity-based, not threshold-based
@@ -25,15 +27,17 @@ warns only when that velocity is projected to hit the cap *before* the window
 resets (with a configurable lead time). The API's own `severity` and a
 near‑cap nudge are secondary signals.
 
-### Usage-based billing (opt-in)
+### Usage-based billing
 
-If you have usage-based ("extra") billing, tick **Usage-based billing** in
-Settings to show your monthly credit pool as its own window — spent vs. limit in
-dollars, percent used, and the same projection treatment (bar overshoot,
-likely-range band, projected spend by month end). The dollar limit is
-deliberately read-only here; a **Change limit ↗** link opens
-`claude.ai` to adjust it. The pool is anchored to the calendar-month boundary
-since the endpoint reports no reset time for it.
+If you have usage-based ("extra") billing enabled on your account, its monthly
+credit pool shows up automatically as its own window — spent vs. limit in
+dollars, percent used, and the same projection treatment, except its bar tops
+out at 100% (a real dollar cap, not a rolling window that can run over). There
+is no in-app control for enabling/disabling the pool or changing its dollar
+limit — both are account-level billing decisions made on claude.ai. A
+**Change limit ↗** link opens `claude.ai/new#settings/usage` for that. The pool
+is anchored to the calendar-month boundary since the endpoint reports no reset
+time for it.
 
 ## How it reads usage
 
@@ -54,8 +58,10 @@ in sync. This is on by default and can be disabled in Settings
 - `src-tauri/src/metrics.rs` — pace/projection engine (the core signal).
 - `src-tauri/src/alerts.rs` — de-duplicated alert rules (re-arm on window reset).
 - `src-tauri/src/tray.rs` — renders the color-coded tray badge.
-- `src-tauri/src/lib.rs` — poll loop, tray/menu, Tauri commands + events.
-- `src/routes/+page.svelte` — the popup UI.
+- `src-tauri/src/lib.rs` — poll loop, tray/menu, windows, Tauri commands + events.
+- `src/routes/+page.svelte` — root page for BOTH windows (see below); renders
+  the popup or delegates to `src/lib/SettingsPanel.svelte` based on which
+  window it's running in.
 
 ## Develop
 
@@ -72,13 +78,31 @@ cargo test --lib         # (in src-tauri/) projection unit tests
 npm run tauri build
 ```
 
+## Windows
+
+Two windows, both defined in `tauri.conf.json` and hidden at startup:
+- **`main`** — the frameless, always-on-top popup toggled by clicking the tray
+  icon; hides on blur.
+- **`settings`** — a normal, resizable, native-chrome window opened via the
+  popup's gear icon or the tray menu's "Settings" entry; stays open on blur
+  since you may want to leave it up while checking values elsewhere. Both hide
+  (rather than close) so reopening is instant and the app keeps running via
+  the tray.
+
+Since the frontend is SPA-only (`ssr = false` + a static fallback shell —
+see [SvelteKit docs](https://svelte.dev/docs/kit/single-page-apps)), both
+windows load the same root page; `src/routes/+page.svelte` checks
+`getCurrentWindow().label` to decide whether to render the popup or delegate
+to `SettingsPanel.svelte`.
+
 ## Config
 
-Stored at the app config dir (`config.json`). Editable from the popup's Settings:
+Stored at the app config dir (`config.json`). Editable from the Settings window:
 `poll_interval_secs` (120), `projection_margin_mins` (30), `velocity_window_hours`
 (6), `near_cap_pct` (95), `cap_confidence` (0.75), `alert_sustain_mins` (10),
-`use_api_severity`, `self_refresh_tokens`, `notifications_enabled`,
-`show_extra_usage` (false).
+`use_api_severity`, `self_refresh_tokens`, `notifications_enabled`. Saving emits
+a `config-updated` event so the popup (if also open) picks up the change
+immediately instead of waiting for its next poll.
 
 ### Projection uncertainty
 
