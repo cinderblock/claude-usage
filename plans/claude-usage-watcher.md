@@ -210,7 +210,8 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
   amount/10^decimals (e.g. 5000 → $50.00). A parallel `spend` block also exists (richer, has
   severity + the `can_toggle` flag) — we use `extra_usage` for simplicity. No `resets_at` in the
   payload → anchored to the calendar-month boundary (`next_month_start`, UTC first-of-next-month);
-  window length nominal 30d. Display-only: a `Projection.dollars {used,limit,currency,decimals}`
+  window length nominal 30d. **Confirmed correct by user (2026-07-08):** the pool does reset at
+  calendar month end, not a subscription-anniversary date — no change needed. Display-only: a `Projection.dollars {used,limit,currency,decimals}`
   (set in `build_projections`, not `project`) drives the "$used / $limit · pct%" header + projected-$
   line; a "Change limit ↗" button opens `https://claude.ai/new#settings/usage` via
   `@tauri-apps/plugin-opener` `openUrl` (added `opener:allow-open-url` capability). NO limit editing
