@@ -19,6 +19,12 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
+/// Floor on the poll cadence — the endpoint rate-limits chatty clients.
+const MIN_POLL_SECS: u64 = 30;
+/// Give up on the optional plan label after this many failed tries, so it
+/// can't add a second request to every poll indefinitely.
+const MAX_PLAN_ATTEMPTS: u8 = 5;
+
 /// What the frontend + tray render from.
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
@@ -37,6 +43,14 @@ pub struct AppState {
     alerts: Mutex<alerts::AlertState>,
     latest: Mutex<Option<Snapshot>>,
     plan: Mutex<Option<String>>,
+    /// Best-effort plan-label fetches so far; capped so a failing profile
+    /// endpoint doesn't add a second request to every poll forever.
+    plan_attempts: Mutex<u8>,
+    /// Consecutive failed polls, for exponential backoff.
+    consecutive_errors: Mutex<u32>,
+    /// Seconds until the next scheduled poll — poll interval normally,
+    /// a backoff delay after failures (respects 429 Retry-After).
+    next_delay_secs: Mutex<u64>,
     config_dir: PathBuf,
 }
 
@@ -195,16 +209,52 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
     let now = Utc::now();
 
     let mut snapshot = match run_fetch(&state, &cfg, now).await {
-        Ok(s) => s,
+        Ok(s) => {
+            *state.consecutive_errors.lock().unwrap() = 0;
+            *state.next_delay_secs.lock().unwrap() = cfg.poll_interval_secs.max(MIN_POLL_SECS);
+            s
+        }
         Err(e) => {
-            let plan = state.plan.lock().unwrap().clone();
-            Snapshot {
-                generated_at: now,
-                plan,
-                tray_percent: 0.0,
-                tray_status: "unknown".into(),
-                windows: vec![],
-                error: Some(e.to_string()),
+            // Back off: double the interval per consecutive failure (capped at
+            // 30 min); on 429 also respect Retry-After with a 5-minute floor.
+            let errors = {
+                let mut c = state.consecutive_errors.lock().unwrap();
+                *c = c.saturating_add(1);
+                *c
+            };
+            let base = cfg.poll_interval_secs.max(MIN_POLL_SECS);
+            let mut delay = base.saturating_mul(1u64 << errors.min(6)).min(1800);
+            let rate_limited = e.downcast_ref::<usage::RateLimited>().cloned();
+            if let Some(ref rl) = rate_limited {
+                delay = delay.max(rl.retry_after_secs.unwrap_or(0)).max(300);
+            }
+            *state.next_delay_secs.lock().unwrap() = delay;
+
+            let error = if rate_limited.is_some() {
+                format!(
+                    "rate limited by the usage endpoint — waiting ~{} min before retrying",
+                    delay.div_ceil(60)
+                )
+            } else {
+                e.to_string()
+            };
+
+            // Keep showing the last good data (stale, with its original
+            // timestamp so "updated X ago" reflects data age) under the banner.
+            match state.latest.lock().unwrap().clone() {
+                Some(prev) => Snapshot {
+                    tray_status: "unknown".into(),
+                    error: Some(error),
+                    ..prev
+                },
+                None => Snapshot {
+                    generated_at: now,
+                    plan: state.plan.lock().unwrap().clone(),
+                    tray_percent: 0.0,
+                    tray_status: "unknown".into(),
+                    windows: vec![],
+                    error: Some(error),
+                },
             }
         }
     };
@@ -268,15 +318,22 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
 async fn run_fetch(state: &AppState, cfg: &Config, now: DateTime<Utc>) -> Result<Snapshot> {
     let token = ensure_token(&state.client, cfg.self_refresh_tokens).await?;
 
-    // Best-effort plan label (once).
+    // Best-effort plan label (once; bounded retries).
     if state.plan.lock().unwrap().is_none() {
-        if let Ok(Some(profile)) = usage::fetch_profile(&state.client, &token).await {
-            let tier = profile
-                .organization
-                .get("rate_limit_tier")
-                .and_then(|v| v.as_str())
-                .map(prettify_tier);
-            *state.plan.lock().unwrap() = tier;
+        let attempt = {
+            let mut a = state.plan_attempts.lock().unwrap();
+            *a = a.saturating_add(1);
+            *a
+        };
+        if attempt <= MAX_PLAN_ATTEMPTS {
+            if let Ok(Some(profile)) = usage::fetch_profile(&state.client, &token).await {
+                let tier = profile
+                    .organization
+                    .get("rate_limit_tier")
+                    .and_then(|v| v.as_str())
+                    .map(prettify_tier);
+                *state.plan.lock().unwrap() = tier;
+            }
         }
     }
 
@@ -433,6 +490,7 @@ pub fn run() {
             let cfg = Config::load(&config_dir);
             let history = history::History::open(&data_dir).expect("open history db");
 
+            let initial_delay = cfg.poll_interval_secs.max(MIN_POLL_SECS);
             let state = Arc::new(AppState {
                 client: usage::build_client().expect("http client"),
                 history,
@@ -440,6 +498,9 @@ pub fn run() {
                 alerts: Mutex::new(alerts::AlertState::default()),
                 latest: Mutex::new(None),
                 plan: Mutex::new(None),
+                plan_attempts: Mutex::new(0),
+                consecutive_errors: Mutex::new(0),
+                next_delay_secs: Mutex::new(initial_delay),
                 config_dir,
             });
             app.manage(state.clone());
@@ -494,7 +555,9 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 loop {
                     poll_once(handle.clone(), loop_state.clone()).await;
-                    let secs = loop_state.config.lock().unwrap().poll_interval_secs.max(10);
+                    // Set by poll_once: the poll interval normally, a backoff
+                    // delay after failures.
+                    let secs = (*loop_state.next_delay_secs.lock().unwrap()).max(MIN_POLL_SECS);
                     tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
                 }
             });

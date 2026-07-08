@@ -106,7 +106,9 @@
     <div class="error">
       <strong>Can't read usage</strong>
       <div>{snap.error}</div>
-      <div class="hint">If the token expired, run Claude Code once to refresh it.</div>
+      {#if snap.error.toLowerCase().includes("token")}
+        <div class="hint">If the token expired, run Claude Code once to refresh it.</div>
+      {/if}
     </div>
   {/if}
 
@@ -114,7 +116,7 @@
     <div class="settings">
       <label>
         <span>Poll interval (s)</span>
-        <input type="number" min="10" bind:value={cfg.poll_interval_secs} onchange={saveCfg} />
+        <input type="number" min="30" step="30" bind:value={cfg.poll_interval_secs} onchange={saveCfg} />
       </label>
       <label title="Only warn when projected to hit the cap at least this many minutes before the window resets. Small gaps are noise.">
         <span>Warn if capping ≥ (min) early</span>

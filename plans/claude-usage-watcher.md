@@ -185,6 +185,15 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
   Window reset re-arms. `Projection.alert_engaged` carries the latched state to the tray + UI so
   red is stable too (`alert_worthy` alone now renders amber). Latches advance every successful
   poll even with notifications disabled.
+- **429 backoff (user, 2026-07-08):** the usage endpoint rate-limited us ("rate_limit_error").
+  Causes: 60s polling with NO backoff on errors (kept hammering while limited), plus the plan-label
+  profile fetch retrying on every poll until it succeeded (2 req/poll when degraded). Fixes:
+  typed `usage::RateLimited` error carrying Retry-After; exponential backoff on consecutive
+  failures (base×2^k, cap 30 min; 429 floor 5 min, respects Retry-After); poll default 120s with
+  a 30s floor (`MIN_POLL_SECS`); plan lookup capped at 5 attempts (`MAX_PLAN_ATTEMPTS`); error
+  snapshots retain the last good windows + generated_at so the UI shows stale bars under the
+  banner instead of going blank; the "run Claude Code" hint only shows for token errors.
+  Note: the loop reads `next_delay_secs` (set by poll_once) instead of the config interval.
 
 ## Progress log
 

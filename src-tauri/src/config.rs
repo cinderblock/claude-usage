@@ -42,7 +42,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            poll_interval_secs: 60,
+            poll_interval_secs: 120,
             projection_margin_mins: 60,
             velocity_window_hours: 6.0,
             min_elapsed_frac: 0.15,

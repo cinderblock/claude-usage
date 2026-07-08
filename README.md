@@ -65,7 +65,7 @@ npm run tauri build
 ## Config
 
 Stored at the app config dir (`config.json`). Editable from the popup's Settings:
-`poll_interval_secs` (60), `projection_margin_mins` (30), `velocity_window_hours`
+`poll_interval_secs` (120), `projection_margin_mins` (30), `velocity_window_hours`
 (6), `near_cap_pct` (95), `cap_confidence` (0.75), `alert_sustain_mins` (10),
 `use_api_severity`, `self_refresh_tokens`, `notifications_enabled`.
 
@@ -88,3 +88,12 @@ instance it re-fires only on a real escalation (cap odds +0.15, usage +5%, or
 an API severity step up) or after the window resets. The red tray/UI state
 follows the latch too, so it doesn't flicker; amber shows while a projection is
 still being confirmed.
+
+### Polite polling
+
+Polls every `poll_interval_secs` (120, floor 30). On any fetch failure the
+loop backs off exponentially (up to 30 min); a 429 also respects `Retry-After`
+with a 5-minute floor. While errored, the popup keeps showing the last good
+data (with its original "updated X ago" age) under the error banner, and the
+optional plan-label lookup gives up after a few failures instead of adding a
+second request to every poll.

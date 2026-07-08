@@ -117,8 +117,25 @@ async fn authed_get(client: &reqwest::Client, url: &str, token: &str) -> Result<
     Ok(resp)
 }
 
+/// The server told us to slow down (HTTP 429 on the usage endpoint). Carried
+/// as a typed error so the poll loop can back off instead of hammering.
+#[derive(Debug, Clone)]
+pub struct RateLimited {
+    /// Seconds from the Retry-After header, when the server provides one.
+    pub retry_after_secs: Option<u64>,
+}
+
+impl std::fmt::Display for RateLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "usage endpoint rate-limited us (429)")
+    }
+}
+
+impl std::error::Error for RateLimited {}
+
 /// Fetch usage. Returns `Ok(None)` on 401 (token rejected) so the caller can
-/// decide to refresh; other non-2xx statuses are hard errors.
+/// decide to refresh; 429 is a typed `RateLimited` error; other non-2xx
+/// statuses are hard errors.
 pub async fn fetch_usage(
     client: &reqwest::Client,
     token: &str,
@@ -126,6 +143,14 @@ pub async fn fetch_usage(
     let resp = authed_get(client, USAGE_URL, token).await?;
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
         return Ok(None);
+    }
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let retry_after_secs = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+        return Err(anyhow::Error::new(RateLimited { retry_after_secs }));
     }
     if !resp.status().is_success() {
         let code = resp.status();
