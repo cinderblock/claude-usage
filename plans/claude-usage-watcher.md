@@ -251,6 +251,22 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
   `theme` property at all (build fails: "not valid under any of the schemas"), only a runtime
   `window.set_theme()` API. Dropped it (cosmetic only, not requested) rather than chase the Rust API.
 
+- **Degraded API responses (2026-07-09):** two observed incidents. (1) Weekly windows briefly reported
+  `0% / resets_at: null` for ~2h (10:56–13:11 local) while the $ pool stayed correct — a real
+  Anthropic-side zeroing/blip, faithfully recorded in history.db; app was correct to display it.
+  (2) Intermittent "parsing usage JSON" errors, at one point stale for 6h38m. Root cause (likely):
+  strict serde — `#[serde(default)]` only covers a MISSING key, so an explicit `"percent": null` or
+  `"utilization": null` (exactly what a degraded backend emits, cf. incident 1) failed the ENTIRE
+  snapshot parse for as long as the API stayed degraded. Hardened: `null_default` deserializer
+  (null → type default) on scalar fields; `lenient_limits` parses each limits[] entry independently
+  and drops malformed ones; if ALL entries drop, run_fetch bails ("no parseable limit windows") so
+  the stale-data path keeps the last good snapshot and alert latches. Parse failures now include the
+  first 200 chars of the body in the error (body is usage data, never credentials) so future
+  incidents are diagnosable from the UI screenshot alone. Serde tests cover the real captured shape
+  + nulled scalars + malformed entries. NOT yet done (offered, no answer): a suspect-sample guard to
+  skip recording implausible drops (100%→0% with resets_at null while the real reset is future) into
+  history.db, so velocity fits aren't polluted when the API recovers.
+
 ## Things not to do (additional)
 
 - Don't add in-app editing of the usage-based billing dollar limit, OR an in-app toggle for

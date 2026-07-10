@@ -404,6 +404,14 @@ async fn run_fetch(state: &AppState, cfg: &Config, now: DateTime<Utc>) -> Result
         .await?
         .ok_or_else(|| anyhow::anyhow!("token rejected (401) — run Claude Code to refresh"))?;
 
+    // Limits parse leniently (malformed entries are dropped); if NONE survived,
+    // the response was degraded — fail the poll so the stale-data path keeps
+    // the last good snapshot instead of publishing an empty one (which would
+    // also wipe the alert latches).
+    if usage.limits.is_empty() {
+        anyhow::bail!("usage response contained no parseable limit windows");
+    }
+
     let projections = build_projections(state, &usage, now, cfg);
 
     // Tray percent = the session (5-hour) window; color = worst across all.
