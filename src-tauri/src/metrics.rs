@@ -346,10 +346,11 @@ fn build_summary(
     if will_hit_wall {
         if let (Some(cap), Some(_)) = (cap_eta, rate) {
             let to_cap = (cap - Utc::now()).num_seconds() as f64 / 3600.0;
+            let lead = time_to_reset_hours - to_cap;
             return format!(
-                "{name}: at this pace you cap in {} (window resets in {}){odds}",
+                "{name}: at this pace you cap in {}, {} before the reset{odds}",
                 fmt_dur(to_cap),
-                fmt_dur(time_to_reset_hours)
+                fmt_dur(lead)
             );
         }
         return format!("{name}: projected to hit the cap before reset{odds}");

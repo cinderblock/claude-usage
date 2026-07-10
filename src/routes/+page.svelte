@@ -53,6 +53,12 @@
     return (new Date(p.resets_at).getTime() - now) / 3_600_000;
   }
 
+  /** Live hours until the projected cap, from the absolute cap ETA. */
+  function hoursToCap(p: Projection): number | null {
+    if (!p.cap_eta) return null;
+    return (new Date(p.cap_eta).getTime() - now) / 3_600_000;
+  }
+
   type Level = "ok" | "warn" | "crit";
   function level(p: Projection): Level {
     // Red follows the latched alert (sustained past the debounce), so a noisy
@@ -170,8 +176,13 @@
               {#if p.alert_engaged}
                 <span class="warn-text">⚠ {p.summary}</span>
               {:else if p.will_hit_wall}
+                {@const ttc = hoursToCap(p)}
                 <span class="sub soft">
-                  on pace to cap early{#if p.cap_probability != null}&nbsp;(~{(p.cap_probability * 100).toFixed(0)}% odds){/if} — monitoring · resets in {fmtHours(ttr)}
+                  {#if ttc != null}
+                    on pace to cap in {fmtHours(ttc)} — {fmtHours(ttr - ttc)} early{#if p.cap_probability != null}&nbsp;(~{(p.cap_probability * 100).toFixed(0)}% odds){/if} · resets in {fmtHours(ttr)}
+                  {:else}
+                    on pace to cap early{#if p.cap_probability != null}&nbsp;(~{(p.cap_probability * 100).toFixed(0)}% odds){/if} — monitoring · resets in {fmtHours(ttr)}
+                  {/if}
                 </span>
               {:else}
                 <span class="sub">resets in {fmtHours(ttr)}</span>
