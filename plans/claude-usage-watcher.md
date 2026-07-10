@@ -267,6 +267,16 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
   skip recording implausible drops (100%→0% with resets_at null while the real reset is future) into
   history.db, so velocity fits aren't polluted when the API recovers.
 
+- **File logging added (user, 2026-07-09):** there were NO logs before — errors only lived in the
+  UI snapshot, which is why incident forensics needed history.db. Now `tauri-plugin-log` v2 writes
+  to the app log dir (`%LOCALAPPDATA%\com.cinderblock.claude-usage\logs\claude-usage.log`) +
+  stdout; rotation at 2MB via `RotationStrategy::KeepAll` + our `prune_logs()` at startup keeping
+  newest 4 `.log` files (KeepAll alone never deletes → unbounded; KeepOne discards all history at
+  rotation — hence the hybrid). Levels: global Info, our crate Debug. What's logged: startup
+  version+config, per-poll one-liner (debug), poll failures w/ backoff + consecutive count (warn),
+  usage-JSON parse failures w/ 1000-char body snippet (warn), alert latch engage/release (info),
+  fired alerts even when notifications are off (info), token refreshes (info).
+
 ## Things not to do (additional)
 
 - Don't add in-app editing of the usage-based billing dollar limit, OR an in-app toggle for

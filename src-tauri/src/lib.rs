@@ -24,6 +24,29 @@ const MIN_POLL_SECS: u64 = 30;
 /// Give up on the optional plan label after this many failed tries, so it
 /// can't add a second request to every poll indefinitely.
 const MAX_PLAN_ATTEMPTS: u8 = 5;
+/// Rotate the log once it reaches this size…
+const LOG_MAX_BYTES: u128 = 2_000_000;
+/// …and keep at most this many files (current + rotated) in the log dir.
+const LOG_KEEP_FILES: usize = 4;
+
+/// Delete all but the newest `keep` log files. The log plugin's KeepAll
+/// rotation renames old files but never deletes them; without this the log
+/// dir grows forever.
+fn prune_logs(dir: &std::path::Path, keep: usize) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<_> = rd
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "log"))
+        .filter_map(|e| {
+            let t = e.metadata().ok()?.modified().ok()?;
+            Some((t, e.path()))
+        })
+        .collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    for (_, p) in files.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(p);
+    }
+}
 
 /// What the frontend + tray render from.
 #[derive(Debug, Clone, Serialize)]
@@ -58,6 +81,7 @@ pub struct AppState {
 pub async fn ensure_token(client: &reqwest::Client, self_refresh: bool) -> Result<String> {
     let creds = credentials::load()?;
     if creds.is_expired(60) && self_refresh {
+        log::info!("access token expired — refreshing and writing back");
         let updated = credentials::refresh(client, &creds).await?;
         credentials::save(&updated)?;
         Ok(updated.access_token)
@@ -275,6 +299,17 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
         Ok(s) => {
             *state.consecutive_errors.lock().unwrap() = 0;
             *state.next_delay_secs.lock().unwrap() = cfg.poll_interval_secs.max(MIN_POLL_SECS);
+            log::debug!(
+                "poll ok: {}",
+                s.windows
+                    .iter()
+                    .map(|p| {
+                        let name = p.scope_label.clone().unwrap_or_else(|| metrics::pretty_kind(&p.kind));
+                        format!("{name} {:.0}%→~{:.0}%", p.percent, p.projected_final_pct)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            );
             s
         }
         Err(e) => {
@@ -292,6 +327,7 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
                 delay = delay.max(rl.retry_after_secs.unwrap_or(0)).max(300);
             }
             *state.next_delay_secs.lock().unwrap() = delay;
+            log::warn!("poll failed (consecutive {errors}, retrying in {delay}s): {e:#}");
 
             let error = if rate_limited.is_some() {
                 format!(
@@ -342,6 +378,14 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
         }
         snapshot.tray_status = status_label(status).into();
 
+        for a in &alerts {
+            log::info!(
+                "alert fired{}: {} — {}",
+                if cfg.notifications_enabled { "" } else { " (notifications off)" },
+                a.title,
+                a.body
+            );
+        }
         if cfg.notifications_enabled {
             let icon = notification_icon(&app);
             for a in alerts {
@@ -540,6 +584,21 @@ pub fn run() {
                 let _ = win.set_focus();
             }
         }))
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("claude-usage".into()),
+                    }),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                ])
+                // Quiet externals; full detail for our own crate.
+                .level(log::LevelFilter::Info)
+                .level_for("claude_usage_lib", log::LevelFilter::Debug)
+                .max_file_size(LOG_MAX_BYTES)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_positioner::init())
@@ -573,9 +632,19 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
 
+            if let Ok(log_dir) = app.path().app_log_dir() {
+                prune_logs(&log_dir, LOG_KEEP_FILES);
+            }
+            log::info!("claude-usage v{} starting", env!("CARGO_PKG_VERSION"));
+
             let config_dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
             let data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
             let cfg = Config::load(&config_dir);
+            log::info!(
+                "config: poll={}s margin={}m velocity={}h sustain={}m confidence={}",
+                cfg.poll_interval_secs, cfg.projection_margin_mins, cfg.velocity_window_hours,
+                cfg.alert_sustain_mins, cfg.cap_confidence
+            );
             let history = history::History::open(&data_dir).expect("open history db");
 
             let initial_delay = cfg.poll_interval_secs.max(MIN_POLL_SECS);

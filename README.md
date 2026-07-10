@@ -124,6 +124,15 @@ an API severity step up) or after the window resets. The red tray/UI state
 follows the latch too, so it doesn't flicker; amber shows while a projection is
 still being confirmed.
 
+### Logs
+
+Written to the app log dir — on Windows
+`%LOCALAPPDATA%\com.cinderblock.claude-usage\logs\claude-usage.log` — and
+rotated at ~2 MB, keeping the newest 4 files (older ones are pruned at
+startup). Poll results are logged at debug, poll failures (with backoff and,
+for parse errors, the start of the offending body) at warn, alert latch
+engage/release and fired notifications at info.
+
 ### Polite polling
 
 Polls every `poll_interval_secs` (120, floor 30). On any fetch failure the

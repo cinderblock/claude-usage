@@ -74,7 +74,7 @@ impl AlertState {
             seen.insert(key.clone());
             let st = self.rules.entry(key.clone()).or_default();
             let level = p.cap_probability.unwrap_or(1.0);
-            if Self::step(st, rk, p.alert_worthy, level, PROJ_ESCALATION, now_ms, sustain_ms) {
+            if Self::step(st, &key, rk, p.alert_worthy, level, PROJ_ESCALATION, now_ms, sustain_ms) {
                 out.push(Alert {
                     key,
                     title: format!("⚠ {name} on track to run out"),
@@ -88,7 +88,7 @@ impl AlertState {
             seen.insert(key.clone());
             let st = self.rules.entry(key.clone()).or_default();
             let cond = p.percent >= cfg.near_cap_pct && climbing;
-            if Self::step(st, rk, cond, p.percent, NEAR_ESCALATION, now_ms, sustain_ms) {
+            if Self::step(st, &key, rk, cond, p.percent, NEAR_ESCALATION, now_ms, sustain_ms) {
                 out.push(Alert {
                     key,
                     title: format!("{name} nearly maxed"),
@@ -102,7 +102,7 @@ impl AlertState {
             seen.insert(key.clone());
             let st = self.rules.entry(key.clone()).or_default();
             let cond = cfg.use_api_severity && rank >= 2;
-            if Self::step(st, rk, cond, rank as f64, SEV_ESCALATION, now_ms, sustain_ms) {
+            if Self::step(st, &key, rk, cond, rank as f64, SEV_ESCALATION, now_ms, sustain_ms) {
                 out.push(Alert {
                     key,
                     title: format!("{name}: {} from Claude", p.severity.clone().unwrap_or_default()),
@@ -127,6 +127,7 @@ impl AlertState {
     /// Advance one rule's latch; returns true when a notification should fire.
     fn step(
         st: &mut RuleState,
+        key: &str,
         window_instance: i64,
         condition: bool,
         level: f64,
@@ -135,6 +136,9 @@ impl AlertState {
         sustain_ms: i64,
     ) -> bool {
         if st.window_instance != window_instance {
+            if st.engaged {
+                log::debug!("latch {key}: released (window reset)");
+            }
             *st = RuleState {
                 window_instance,
                 ..RuleState::default()
@@ -148,6 +152,7 @@ impl AlertState {
                 if now_ms - since >= sustain_ms {
                     st.engaged = false;
                     st.false_since = None;
+                    log::info!("latch {key}: released (clear for sustain period)");
                 }
             }
             return false;
@@ -157,6 +162,7 @@ impl AlertState {
         let since = *st.true_since.get_or_insert(now_ms);
         if !st.engaged && now_ms - since >= sustain_ms {
             st.engaged = true;
+            log::info!("latch {key}: engaged (level {level:.2})");
         }
         if !st.engaged {
             return false;

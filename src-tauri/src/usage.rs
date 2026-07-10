@@ -217,7 +217,9 @@ pub async fn fetch_usage(
             // Include the start of the body: without it, an intermittent
             // "parsing usage JSON" error is undiagnosable after the fact.
             // The body is usage data, never credentials, so this is safe to
-            // surface in the UI.
+            // surface in the UI (short) and the log (longer).
+            let log_snippet: String = text.chars().take(1000).collect();
+            log::warn!("usage JSON parse failed ({e}); body[..1000]: {log_snippet}");
             let snippet: String = text.chars().take(200).collect();
             let snippet = if snippet.is_empty() { "<empty body>".to_string() } else { snippet };
             Err(anyhow!("parsing usage JSON ({e}) — body starts: {snippet}"))
