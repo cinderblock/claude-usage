@@ -530,6 +530,18 @@ fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Config {
     state.config.lock().unwrap().clone()
 }
 
+/// Time-series for one window since `since` (epoch ms), oldest first. Powers
+/// the per-window usage-over-time charts.
+#[tauri::command]
+fn get_history(
+    state: tauri::State<'_, Arc<AppState>>,
+    kind: String,
+    scope: String,
+    since: i64,
+) -> Vec<history::Sample> {
+    state.history.samples_since(&kind, &scope, since).unwrap_or_default()
+}
+
 #[tauri::command]
 fn test_notification(app: tauri::AppHandle) -> Result<(), String> {
     let mut b = app
@@ -610,6 +622,7 @@ pub fn run() {
             get_usage,
             refresh_now,
             get_config,
+            get_history,
             set_config,
             test_notification,
             open_settings_window

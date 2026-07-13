@@ -32,6 +32,11 @@ export interface Dollars {
   decimals: number;
 }
 
+export interface Sample {
+  ts: number;
+  percent: number;
+}
+
 export interface Snapshot {
   generated_at: string;
   plan: string | null;
@@ -61,6 +66,8 @@ export const testNotification = () => invoke<void>("test_notification");
 export const getConfig = () => invoke<Config>("get_config");
 export const setConfig = (config: Config) => invoke<void>("set_config", { config });
 export const openSettingsWindow = () => invoke<void>("open_settings_window");
+export const getHistory = (kind: string, scope: string, since: number) =>
+  invoke<Sample[]>("get_history", { kind, scope, since });
 
 export function prettyKind(kind: string): string {
   switch (kind) {

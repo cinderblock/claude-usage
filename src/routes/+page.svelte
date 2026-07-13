@@ -4,9 +4,11 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import SettingsPanel from "$lib/SettingsPanel.svelte";
+  import UsageChart, { type ChartSeries } from "$lib/UsageChart.svelte";
   import {
     getUsage,
     getConfig,
+    getHistory,
     refreshNow,
     openSettingsWindow,
     prettyKind,
@@ -15,6 +17,7 @@
     type Snapshot,
     type Projection,
     type Config,
+    type Sample,
   } from "$lib/usage";
 
   const USAGE_SETTINGS_URL = "https://claude.ai/new#settings/usage";
@@ -74,16 +77,6 @@
     return !cfg || p.elapsed_frac >= cfg.min_elapsed_frac;
   }
 
-  // Bars span 0–150% so an overshooting projection stays visible, with the
-  // 100% cap at the 2/3 mark — EXCEPT the usage-billing pool, which has a
-  // hard $ cap, so its bar tops out at 100% like a normal meter.
-  function barMax(p: Projection): number {
-    return p.dollars ? 100 : 150;
-  }
-  function barX(v: number, max: number): number {
-    return (Math.min(Math.max(v, 0), max) / max) * 100;
-  }
-
   /** "~118%" or "~95–140%" when the fit gives a meaningful spread. */
   function fmtProjected(p: Projection): string {
     const lo = p.projected_final_low_pct;
@@ -101,6 +94,107 @@
     }
   }
 
+  // ---- Charts ----
+  // Windows are grouped so related series share one time chart: the two weekly
+  // limits (overall + per-model) sit on the same 7-day axis.
+  type GroupId = "session" | "weekly" | "monthly" | string;
+  function groupOf(p: Projection): GroupId {
+    if (p.kind === "weekly_all" || p.kind === "weekly_scoped") return "weekly";
+    if (p.kind === "session") return "session";
+    if (p.kind === "monthly_extra") return "monthly";
+    return p.kind;
+  }
+  const GROUP_ORDER: GroupId[] = ["session", "weekly", "monthly"];
+  const GROUP_TITLE: Record<string, string> = {
+    session: "5-hour",
+    weekly: "Weekly",
+    monthly: "Usage billing",
+  };
+
+  const key = (p: Projection) => `${p.kind}:${p.scope_key}`;
+
+  /** Stable [start,end] ms for a window's full span (independent of `now`). */
+  function windowSpan(p: Projection, generatedAt: string): { start: number; end: number } {
+    const len = p.window_len_hours * 3_600_000;
+    const end = p.resets_at ? new Date(p.resets_at).getTime() : new Date(generatedAt).getTime() + len;
+    return { start: end - len, end };
+  }
+
+  /** Short per-series label for a legend chip. */
+  function memberLabel(p: Projection): string {
+    if (p.scope_label) return p.scope_label;
+    if (p.kind === "weekly_all") return "All models";
+    return prettyKind(p.kind);
+  }
+
+  const SERIES_COLORS = ["#6aa9ff", "#e0a458", "#c586e0", "#54c7b0"];
+  function memberColor(p: Projection, idxInGroup: number): string {
+    return p.scope_key === "all" ? "#3fb950" : SERIES_COLORS[idxInGroup % SERIES_COLORS.length];
+  }
+
+  // Per-(kind,scope) history, refetched whenever a new snapshot lands.
+  let hist = $state<Record<string, Sample[]>>({});
+  $effect(() => {
+    const s = snap;
+    if (!s) return;
+    Promise.all(
+      s.windows.map(
+        async (p) =>
+          [key(p), await getHistory(p.kind, p.scope_key, Math.floor(windowSpan(p, s.generated_at).start))] as const,
+      ),
+    ).then((entries) => (hist = Object.fromEntries(entries)));
+  });
+
+  interface ChartGroup {
+    id: GroupId;
+    title: string;
+    members: Projection[];
+    series: ChartSeries[];
+    start: number;
+    end: number;
+    yCap: number;
+    level: Level;
+  }
+
+  const groups = $derived.by<ChartGroup[]>(() => {
+    if (!snap) return [];
+    const by = new Map<GroupId, Projection[]>();
+    for (const p of snap.windows) {
+      const g = groupOf(p);
+      (by.get(g) ?? by.set(g, []).get(g)!).push(p);
+    }
+    const ids = [...by.keys()].sort((a, b) => {
+      const ia = GROUP_ORDER.indexOf(a), ib = GROUP_ORDER.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    return ids.map((id) => {
+      // Overall (scope "all") first so it's the visual baseline.
+      const members = by.get(id)!.slice().sort((a, b) => (a.scope_key === "all" ? -1 : 0) - (b.scope_key === "all" ? -1 : 0));
+      const rep = members[0];
+      const { start, end } = windowSpan(rep, snap!.generated_at);
+      const series: ChartSeries[] = members.map((p, i) => ({
+        label: memberLabel(p),
+        color: memberColor(p, i),
+        samples: hist[key(p)] ?? [],
+        projectedPct: enoughSignal(p) && p.projected_final_pct > p.percent + 0.5 ? p.projected_final_pct : null,
+        currentPct: p.percent,
+      }));
+      const worst = members.reduce<Level>((acc, p) => {
+        const l = level(p);
+        return l === "crit" || acc === "crit" ? "crit" : l === "warn" || acc === "warn" ? "warn" : "ok";
+      }, "ok");
+      return {
+        id,
+        title: GROUP_TITLE[id] ?? prettyKind(rep.kind),
+        members,
+        series,
+        start,
+        end,
+        yCap: rep.dollars ? 100 : 150,
+        level: worst,
+      };
+    });
+  });
 </script>
 
 {#if isSettingsWindow}
@@ -129,73 +223,48 @@
       {#if !snap}
         <div class="loading">Loading…</div>
       {:else}
-        {#each snap.windows as p (p.kind + p.scope_key)}
-          {@const lv = level(p)}
-          {@const ttr = hoursToReset(p)}
-          {@const max = barMax(p)}
-          {@const showProj = enoughSignal(p) && p.projected_final_pct > p.percent + 0.5}
-          {@const lo = p.projected_final_low_pct}
-          {@const hi = p.projected_final_high_pct}
-          <div class="win {lv}">
+        {#each groups as g (g.id)}
+          {@const ttr = hoursToReset(g.members[0])}
+          {@const single = g.members.length === 1 ? g.members[0] : null}
+          <div class="win {g.level}">
             <div class="win-head">
-              <span class="name">{p.scope_label ?? prettyKind(p.kind)}</span>
-              {#if p.dollars}
+              <span class="name">{g.title}</span>
+              {#if single?.dollars}
                 <span class="pct">
-                  {fmtMoney(p.dollars.used, p.dollars.currency, p.dollars.decimals)}
-                  <span class="dim">/ {fmtMoney(p.dollars.limit, p.dollars.currency, p.dollars.decimals)}</span>
-                  · {p.percent.toFixed(0)}%
+                  {fmtMoney(single.dollars.used, single.dollars.currency, single.dollars.decimals)}
+                  <span class="dim">/ {fmtMoney(single.dollars.limit, single.dollars.currency, single.dollars.decimals)}</span>
+                  · {single.percent.toFixed(0)}%
                 </span>
+              {:else if single}
+                <span class="pct">{single.percent.toFixed(0)}%</span>
               {:else}
-                <span class="pct">{p.percent.toFixed(0)}%</span>
+                <span class="legend">
+                  {#each g.members as m, i (key(m))}
+                    <span class="chip" style="--c:{memberColor(m, i)}">{memberLabel(m)} {m.percent.toFixed(0)}%</span>
+                  {/each}
+                </span>
               {/if}
             </div>
-            <div class="bar">
-              {#if !p.dollars}
-                <div class="over-zone" style="left:{barX(100, max)}%"></div>
-              {/if}
-              <div class="fill" style="width:{barX(p.percent, max)}%"></div>
-              {#if showProj}
-                <div
-                  class="proj-fill"
-                  style="left:{barX(p.percent, max)}%; width:{barX(p.projected_final_pct, max) - barX(p.percent, max)}%"
-                ></div>
-                {#if lo != null && hi != null && hi - lo >= 2}
-                  <div
-                    class="band"
-                    style="left:{barX(lo, max)}%; width:{Math.max(barX(hi, max) - barX(lo, max), 0.5)}%"
-                    title="likely range at reset (10–90%)"
-                  ></div>
-                {/if}
-                <div class="proj-marker" style="left:{barX(p.projected_final_pct, max)}%" title="projected at reset"></div>
-              {/if}
-              {#if !p.dollars}
-                <div class="tick-100" style="left:{barX(100, max)}%"></div>
-              {/if}
-            </div>
+
+            <UsageChart series={g.series} startMs={g.start} endMs={g.end} nowMs={now} yCap={g.yCap} />
+
             <div class="meta">
-              {#if p.alert_engaged}
-                <span class="warn-text">⚠ {p.summary}</span>
-              {:else if p.will_hit_wall}
-                {@const ttc = hoursToCap(p)}
-                <span class="sub soft">
-                  {#if ttc != null}
-                    on pace to cap in {fmtHours(ttc)} — {fmtHours(ttr - ttc)} early{#if p.cap_probability != null}&nbsp;(~{(p.cap_probability * 100).toFixed(0)}% odds){/if} · resets in {fmtHours(ttr)}
-                  {:else}
-                    on pace to cap early{#if p.cap_probability != null}&nbsp;(~{(p.cap_probability * 100).toFixed(0)}% odds){/if} — monitoring · resets in {fmtHours(ttr)}
-                  {/if}
-                </span>
-              {:else}
-                <span class="sub">resets in {fmtHours(ttr)}</span>
-                {#if showProj && !p.dollars && p.rate_per_hour != null && p.rate_per_hour > 0.01}
-                  <span class="sub dim">· {fmtProjected(p)} by reset</span>
+              <span class="sub">resets in {fmtHours(ttr)}</span>
+              {#each g.members as m (key(m))}
+                {#if m.alert_engaged}
+                  <div class="note warn-text">⚠ {m.summary}</div>
+                {:else if m.will_hit_wall}
+                  {@const ttc = hoursToCap(m)}
+                  <div class="note soft">
+                    {g.members.length > 1 ? memberLabel(m) + ": " : ""}on pace to cap{#if ttc != null} in {fmtHours(ttc)} — {fmtHours(Math.max(ttr - ttc, 0))} early{/if}{#if m.cap_probability != null}&nbsp;(~{(m.cap_probability * 100).toFixed(0)}% odds){/if}
+                  </div>
+                {:else if enoughSignal(m) && m.projected_final_pct > m.percent + 0.5 && m.rate_per_hour != null && m.rate_per_hour > 0.01}
+                  <div class="note sub dim">
+                    {g.members.length > 1 ? memberLabel(m) + ": " : ""}{#if m.dollars}~{fmtMoney((m.projected_final_pct / 100) * m.dollars.limit, m.dollars.currency, m.dollars.decimals)}{:else}{fmtProjected(m)}{/if} by reset
+                  </div>
                 {/if}
-              {/if}
-              {#if p.dollars}
-                {#if showProj && p.rate_per_hour != null && p.rate_per_hour > 0.01}
-                  <span class="sub dim">
-                    · ~{fmtMoney((p.projected_final_pct / 100) * p.dollars.limit, p.dollars.currency, p.dollars.decimals)} projected
-                  </span>
-                {/if}
+              {/each}
+              {#if single?.dollars}
                 <button class="link" onclick={() => openUrl(USAGE_SETTINGS_URL)} title="Change your limit on claude.ai">
                   Change limit ↗
                 </button>
@@ -288,7 +357,9 @@
   .win-head {
     display: flex;
     justify-content: space-between;
-    margin-bottom: 5px;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 4px;
   }
   .name {
     font-weight: 500;
@@ -297,72 +368,33 @@
     font-variant-numeric: tabular-nums;
     color: #c7cbd1;
   }
-  .bar {
-    position: relative;
-    height: 7px;
-    background: #2c3038;
-    border-radius: 4px;
-    overflow: visible;
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    justify-content: flex-end;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
   }
-  .over-zone {
-    position: absolute;
-    top: 0;
-    right: 0;
-    height: 100%;
-    background: rgba(210, 55, 43, 0.16);
-    border-radius: 0 4px 4px 0;
+  .chip {
+    color: #c7cbd1;
+    display: inline-flex;
+    align-items: center;
   }
-  .fill {
-    height: 100%;
-    border-radius: 4px;
-    background: #2ea043;
-    transition: width 0.4s ease;
-  }
-  .win.warn .fill {
-    background: #db9a04;
-  }
-  .win.crit .fill {
-    background: #d2372b;
-  }
-  .proj-fill {
-    position: absolute;
-    top: 0;
-    height: 100%;
-    background: rgba(46, 160, 67, 0.35);
-    transition: left 0.4s ease, width 0.4s ease;
-  }
-  .win.warn .proj-fill {
-    background: rgba(219, 154, 4, 0.35);
-  }
-  .win.crit .proj-fill {
-    background: rgba(210, 55, 43, 0.35);
-  }
-  .band {
-    position: absolute;
-    top: 0;
-    height: 100%;
-    background: rgba(232, 234, 237, 0.18);
+  .chip::before {
+    content: "";
+    width: 8px;
+    height: 8px;
     border-radius: 2px;
-  }
-  .tick-100 {
-    position: absolute;
-    top: -2px;
-    width: 2px;
-    height: 11px;
-    margin-left: -1px;
-    background: rgba(232, 234, 237, 0.45);
-  }
-  .proj-marker {
-    position: absolute;
-    top: -1px;
-    width: 2px;
-    height: 9px;
-    background: #e8eaed;
-    opacity: 0.8;
+    background: var(--c);
+    margin-right: 4px;
   }
   .meta {
-    margin-top: 5px;
+    margin-top: 4px;
     font-size: 12px;
+  }
+  .note {
+    margin-top: 2px;
   }
   .sub {
     color: #9aa0a6;

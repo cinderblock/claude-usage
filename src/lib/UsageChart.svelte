@@ -1,0 +1,125 @@
+<script lang="ts">
+  import type { Sample } from "$lib/usage";
+
+  export interface ChartSeries {
+    label: string;
+    color: string;
+    samples: Sample[];
+    projectedPct: number | null;
+    currentPct: number;
+  }
+
+  let {
+    series,
+    startMs,
+    endMs,
+    nowMs,
+    yCap = 150,
+  }: {
+    series: ChartSeries[];
+    startMs: number;
+    endMs: number;
+    nowMs: number;
+    /** Hard ceiling on the y-axis (100 for a real dollar cap, ~150 otherwise). */
+    yCap?: number;
+  } = $props();
+
+  // Measured pixel width → crisp strokes (no viewBox distortion).
+  let w = $state(300);
+  const H = 70;
+
+  const span = $derived(Math.max(endMs - startMs, 1));
+
+  // Y-axis top: room above the data, capped so overshoot doesn't squash the
+  // meaningful 0–100 band.
+  const yMax = $derived(
+    Math.min(
+      yCap,
+      Math.max(
+        105,
+        ...series.flatMap((s) => [
+          s.currentPct,
+          s.projectedPct ?? 0,
+          ...s.samples.map((p) => p.percent),
+        ]),
+      ),
+    ),
+  );
+
+  const xOf = (ts: number) => ((ts - startMs) / span) * w;
+  const yOf = (pct: number) => H - (Math.min(Math.max(pct, 0), yMax) / yMax) * H;
+
+  function linePath(samples: Sample[]): string {
+    if (!samples.length) return "";
+    return samples.map((p, i) => `${i ? "L" : "M"}${xOf(p.ts).toFixed(1)},${yOf(p.percent).toFixed(1)}`).join("");
+  }
+
+  const nowX = $derived(xOf(nowMs));
+</script>
+
+<div class="chart" bind:clientWidth={w}>
+  <svg width={w} height={H} role="img">
+    <!-- even-pace reference: 0% at window start → 100% at reset -->
+    <line x1={xOf(startMs)} y1={yOf(0)} x2={xOf(endMs)} y2={yOf(100)} class="pace" />
+    <!-- 100% ceiling -->
+    {#if yMax > 100}
+      <line x1="0" y1={yOf(100)} x2={w} y2={yOf(100)} class="cap-line" />
+    {/if}
+    <!-- now -->
+    {#if nowX >= 0 && nowX <= w}
+      <line x1={nowX} y1="0" x2={nowX} y2={H} class="now" />
+    {/if}
+
+    {#each series as s (s.label)}
+      {@const last = s.samples.at(-1)}
+      <!-- projection: last sample → projected at reset -->
+      {#if last && s.projectedPct != null && s.projectedPct > last.percent + 0.5}
+        <line
+          x1={xOf(last.ts)}
+          y1={yOf(last.percent)}
+          x2={xOf(endMs)}
+          y2={yOf(s.projectedPct)}
+          stroke={s.color}
+          class="proj"
+        />
+      {/if}
+      <!-- actual usage -->
+      <path d={linePath(s.samples)} fill="none" stroke={s.color} stroke-width="1.75" />
+      {#if last}
+        <circle cx={xOf(last.ts)} cy={yOf(last.percent)} r="2.4" fill={s.color} />
+      {/if}
+    {/each}
+  </svg>
+</div>
+
+<style>
+  .chart {
+    width: 100%;
+  }
+  svg {
+    display: block;
+    overflow: visible;
+  }
+  .pace {
+    stroke: #6b7280;
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+    opacity: 0.6;
+  }
+  .cap-line {
+    stroke: #d2372b;
+    stroke-width: 1;
+    stroke-dasharray: 2 3;
+    opacity: 0.4;
+  }
+  .now {
+    stroke: #e8eaed;
+    stroke-width: 1;
+    opacity: 0.25;
+  }
+  .proj {
+    stroke-width: 1.5;
+    stroke-dasharray: 3 2;
+    opacity: 0.55;
+  }
+</style>

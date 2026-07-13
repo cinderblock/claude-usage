@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
+use serde::Serialize;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -10,7 +11,7 @@ pub struct History {
     conn: Mutex<Connection>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Sample {
     /// epoch milliseconds
     pub ts: i64,
