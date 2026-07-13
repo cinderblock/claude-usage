@@ -277,6 +277,31 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
   usage-JSON parse failures w/ 1000-char body snippet (warn), alert latch engage/release (info),
   fired alerts even when notifications are off (info), token refreshes (info).
 
+- **Notifications never fired despite high usage (user, 2026-07-13) — DIAGNOSED, fix DEFERRED.** Logs
+  showed ZERO `alert fired`/`latch engaged` all day while session hit 94% (API `critical`) and Fable
+  76% (API `warning`). Three independent causes: (1) Rule 1 projection for the 5-hour window is
+  muzzled in its final `projection_margin_mins` (60m) — `will_hit_wall` needs eta < ttr − margin, but
+  a 5h window near reset has ttr ≈ margin → threshold negative → can't fire; also the flat-then-ramp
+  daily pattern makes the 6h fit noisy so `cap_confidence` (0.75) withholds during the ramp.
+  (2) Rule 2 near-cap fires at ≥95% AND climbing; session sat at 94-95%, on the boundary. (3) Rule 3
+  (API severity, the safety net) requires the warning/critical state to hold CONTINUOUSLY for
+  `alert_sustain_mins` (10m); the API's severity flaps as usage bursts (also observed intermittent
+  responses missing `limits`), and any single non-warning poll resets the sustain timer → never
+  latches. Proposed fixes (flapping-tolerant sustain / hysteresis; window-scaled margin; absolute
+  ≥90% rule; per-poll severity logging). **User rejected the alert-tuning path** in favor of richer
+  visuals; deferred. If revisited: user chose 90% for an absolute-level rule.
+- **Time-series charts replace fill bars (user, 2026-07-13):** each window is now a 2D usage-over-time
+  chart (`UsageChart.svelte`, hand-rolled SVG, no chart lib) instead of a single fill bar. Windows on
+  the same timescale are combined: `weekly_all` + `weekly_scoped` (Fable) render as two lines on one
+  7-day axis; session (5h) and monthly ($) get their own. Chart draws: actual usage polyline per
+  series, a dashed even-pace reference diagonal (0% at window start → 100% at reset; above it =
+  burning too fast — the key "using too fast?" signal), projection segment (last sample → projected
+  at reset), 100% line, live `now` marker. Grouping/colors in `+page.svelte` (`groups` `$derived`,
+  scope "all" = green baseline, others from a palette). Data via new `get_history(kind,scope,since)`
+  Tauri command over the existing `History::samples_since` (Sample now derives Serialize). yMax caps
+  at 150 (100 for $) so huge overshoot projections don't squash the 0–100 band. History retained 30d
+  so weekly/monthly axes have data. Old bar CSS + `barX`/`barMax` removed.
+
 ## Things not to do (additional)
 
 - Don't add in-app editing of the usage-based billing dollar limit, OR an in-app toggle for
