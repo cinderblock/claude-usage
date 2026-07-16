@@ -204,36 +204,51 @@ fn build_projections(state: &AppState, usage: &usage::UsageResponse, now: DateTi
         ));
     }
 
-    // Usage-based billing pool. Shown whenever it's enabled on the account
-    // (extra_usage.is_enabled) — same as every other window, no separate
-    // display toggle. Enabling/disabling the pool itself is done on claude.ai;
-    // this app only ever reads its state. Modeled as a monthly window anchored
-    // to the calendar-month boundary (the API gives no reset time).
-    if let Some(eu) = usage.extra_usage.as_ref().filter(|e| e.is_enabled) {
-        let resets_at = next_month_start(now);
-        let mut p = project_window(
-            state,
-            now,
-            cfg,
-            "monthly_extra",
-            "all",
-            Some(metrics::pretty_kind("monthly_extra")),
-            eu.utilization,
-            None,
-            Some(resets_at),
-        );
-        // Attach dollar figures for display (minor units → major).
-        if let (Some(limit), Some(used)) = (eu.monthly_limit, eu.used_credits) {
-            let decimals = eu.decimal_places.unwrap_or(2);
-            let scale = 10f64.powi(decimals as i32);
-            p.dollars = Some(metrics::Dollars {
-                used: used / scale,
-                limit: limit / scale,
-                currency: eu.currency.clone().unwrap_or_else(|| "USD".into()),
-                decimals,
-            });
+    // Usage-based billing pool. Shown whenever the API reports real dollar
+    // figures — NOT gated on `is_enabled`, because the API flips that to false
+    // when the pool is *exhausted* (used == limit), and hiding the window
+    // exactly when you've maxed your credits is the opposite of useful. A
+    // genuinely-off pool reports a null `monthly_limit`, so it's still hidden.
+    // Enabling/disabling and the limit itself are changed on claude.ai; this
+    // app only reads. Modeled as a monthly window anchored to the calendar
+    // month (the API gives no reset time).
+    if let Some(eu) = usage.extra_usage.as_ref() {
+        match (eu.monthly_limit, eu.used_credits) {
+            (Some(limit), Some(used)) if limit > 0.0 => {
+                // Derive percent from the dollar figures (exact, and robust to a
+                // nulled `utilization` when the API disables an exhausted pool),
+                // capped at 100 since a hard dollar cap can't be exceeded.
+                let percent = (used / limit * 100.0).min(100.0);
+                let resets_at = next_month_start(now);
+                let mut p = project_window(
+                    state,
+                    now,
+                    cfg,
+                    "monthly_extra",
+                    "all",
+                    Some(metrics::pretty_kind("monthly_extra")),
+                    percent,
+                    None,
+                    Some(resets_at),
+                );
+                let decimals = eu.decimal_places.unwrap_or(2);
+                let scale = 10f64.powi(decimals as i32);
+                p.dollars = Some(metrics::Dollars {
+                    used: used / scale,
+                    limit: limit / scale,
+                    currency: eu.currency.clone().unwrap_or_else(|| "USD".into()),
+                    decimals,
+                });
+                projections.push(p);
+            }
+            // Present but no usable figures. If this happens while the pool is
+            // actually maxed (rather than switched off), it's the API dropping
+            // the numbers on exhaustion — capture the exact shape so we know.
+            _ => log::debug!(
+                "extra_usage present but not shown: is_enabled={} monthly_limit={:?} used_credits={:?} utilization={} disabled_reason={:?}",
+                eu.is_enabled, eu.monthly_limit, eu.used_credits, eu.utilization, eu.disabled_reason
+            ),
         }
-        projections.push(p);
     }
 
     projections

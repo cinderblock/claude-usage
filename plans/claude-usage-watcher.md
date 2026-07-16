@@ -302,6 +302,21 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
   at 150 (100 for $) so huge overshoot projections don't squash the 0–100 band. History retained 30d
   so weekly/monthly axes have data. Old bar CSS + `barX`/`barMax` removed.
 
+- **Billing pool vanished at 100% (user, 2026-07-15):** history showed `monthly_extra` stopped
+  recording exactly when it hit 100% (gap 17:04 @100% → 18:42 @88%, while session/weekly kept logging
+  53 samples each — so poll-wide outage ruled out). Cause: the display gate was `filter(|e|
+  e.is_enabled)`, and the API flips `is_enabled` to FALSE when the pool is *exhausted* (used==limit),
+  so we hid the window precisely when the user maxed their credits. Fix: gate on real dollar figures
+  (`monthly_limit` & `used_credits` present, limit>0) instead of `is_enabled`; a genuinely-off pool
+  reports null `monthly_limit` so it's still hidden. Also now derive percent from `used/limit`
+  (capped 100) rather than `eu.utilization`, since utilization may be nulled when the API disables an
+  exhausted pool. CAVEAT (unverified): this only shows the exhausted pool if the API still returns the
+  dollar numbers when `is_enabled=false`; if it nulls them too, nothing can show. Added a debug log of
+  the raw `extra_usage` shape whenever it's present-but-not-shown, to capture the exact exhaustion
+  shape next time it maxes (currently the account is at ~91%, can't reproduce on demand). The `spend`
+  block is a richer fallback (has `enabled`/`disabled_reason`/`severity`) if extra_usage proves to
+  drop its numbers.
+
 ## Things not to do (additional)
 
 - Don't add in-app editing of the usage-based billing dollar limit, OR an in-app toggle for
