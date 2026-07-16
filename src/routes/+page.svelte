@@ -77,6 +77,19 @@
     return !cfg || p.elapsed_frac >= cfg.min_elapsed_frac;
   }
 
+  /** Amber pace warning, built as one string — interpolating fragments
+   *  through {#if} blocks collapses the whitespace between them ("capin"). */
+  function paceNote(m: Projection, ttr: number, multi: boolean): string {
+    const prefix = multi ? memberLabel(m) + ": " : "";
+    const odds = m.cap_probability != null ? ` (~${(m.cap_probability * 100).toFixed(0)}% odds)` : "";
+    const ttc = hoursToCap(m);
+    if (ttc == null) return `${prefix}on pace to cap early${odds} — monitoring`;
+    const early = fmtHours(Math.max(ttr - ttc, 0));
+    // Cap ETA already passed (or is imminent): "in now" is nonsense.
+    if (ttc <= 1 / 60) return `${prefix}on pace to cap about now — ${early} before the reset${odds}`;
+    return `${prefix}on pace to cap in ${fmtHours(ttc)} — ${early} early${odds}`;
+  }
+
   /** "~118%" or "~95–140%" when the fit gives a meaningful spread. */
   function fmtProjected(p: Projection): string {
     const lo = p.projected_final_low_pct;
@@ -254,10 +267,7 @@
                 {#if m.alert_engaged}
                   <div class="note warn-text">⚠ {m.summary}</div>
                 {:else if m.will_hit_wall}
-                  {@const ttc = hoursToCap(m)}
-                  <div class="note soft">
-                    {g.members.length > 1 ? memberLabel(m) + ": " : ""}on pace to cap{#if ttc != null} in {fmtHours(ttc)} — {fmtHours(Math.max(ttr - ttc, 0))} early{/if}{#if m.cap_probability != null}&nbsp;(~{(m.cap_probability * 100).toFixed(0)}% odds){/if}
-                  </div>
+                  <div class="note soft">{paceNote(m, ttr, g.members.length > 1)}</div>
                 {:else if enoughSignal(m) && m.projected_final_pct > m.percent + 0.5 && m.rate_per_hour != null && m.rate_per_hour > 0.01}
                   <div class="note sub dim">
                     {g.members.length > 1 ? memberLabel(m) + ": " : ""}{#if m.dollars}~{fmtMoney((m.projected_final_pct / 100) * m.dollars.limit, m.dollars.currency, m.dollars.decimals)}{:else}{fmtProjected(m)}{/if} by reset

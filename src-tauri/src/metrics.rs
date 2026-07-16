@@ -347,6 +347,13 @@ fn build_summary(
         if let (Some(cap), Some(_)) = (cap_eta, rate) {
             let to_cap = (cap - Utc::now()).num_seconds() as f64 / 3600.0;
             let lead = time_to_reset_hours - to_cap;
+            // A cap ETA that's already passed would render "you cap in now".
+            if to_cap <= 1.0 / 60.0 {
+                return format!(
+                    "{name}: at this pace you cap about now, {} before the reset{odds}",
+                    fmt_dur(lead)
+                );
+            }
             return format!(
                 "{name}: at this pace you cap in {}, {} before the reset{odds}",
                 fmt_dur(to_cap),
