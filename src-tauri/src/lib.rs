@@ -271,6 +271,7 @@ fn build_menu(app: &tauri::AppHandle, snapshot: &Snapshot) -> tauri::Result<Menu
     let refresh = MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open window", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+    let updates = MenuItem::with_id(app, "check_updates", "Check for updates", true, None::<&str>)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
@@ -282,6 +283,7 @@ fn build_menu(app: &tauri::AppHandle, snapshot: &Snapshot) -> tauri::Result<Menu
     refs.push(&refresh);
     refs.push(&open);
     refs.push(&settings);
+    refs.push(&updates);
     refs.push(&sep2);
     refs.push(&quit);
 
@@ -515,6 +517,71 @@ fn notification_icon(app: &tauri::AppHandle) -> Option<String> {
     }
 }
 
+fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
+    let mut b = app.notification().builder().title(title).body(body);
+    if let Some(path) = notification_icon(app) {
+        b = b.icon(path);
+    }
+    let _ = b.show();
+}
+
+/// Check GitHub Releases for a newer signed build; download, install, and
+/// restart when one exists. `interactive` (tray-menu invocation) also surfaces
+/// "already up to date" and failures as toasts instead of just log lines.
+async fn check_for_updates(app: tauri::AppHandle, interactive: bool) {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            log::warn!("updater unavailable: {e}");
+            return;
+        }
+    };
+    match updater.check().await {
+        Ok(Some(update)) => {
+            log::info!(
+                "update available: v{} (running v{})",
+                update.version,
+                env!("CARGO_PKG_VERSION")
+            );
+            notify(
+                &app,
+                "Claude Usage update",
+                &format!("Installing v{} — the app will restart.", update.version),
+            );
+            match update.download_and_install(|_, _| {}, || {}).await {
+                Ok(()) => {
+                    log::info!("update installed — restarting");
+                    app.restart();
+                }
+                Err(e) => {
+                    log::warn!("update install failed: {e}");
+                    if interactive {
+                        notify(&app, "Claude Usage update", &format!("Update failed: {e}"));
+                    }
+                }
+            }
+        }
+        Ok(None) => {
+            log::debug!("no update available");
+            if interactive {
+                notify(
+                    &app,
+                    "Claude Usage",
+                    &format!("Up to date (v{}).", env!("CARGO_PKG_VERSION")),
+                );
+            }
+        }
+        Err(e) => {
+            log::warn!("update check failed: {e}");
+            if interactive {
+                notify(&app, "Claude Usage", &format!("Update check failed: {e}"));
+            }
+        }
+    }
+}
+
 fn tooltip(s: &Snapshot) -> String {
     if let Some(e) = &s.error {
         return format!("Claude Usage — error: {e}");
@@ -633,6 +700,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_usage,
             refresh_now,
@@ -698,6 +766,7 @@ pub fn run() {
                     &MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?,
                     &MenuItem::with_id(app, "open", "Open window", true, None::<&str>)?,
                     &MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "check_updates", "Check for updates", true, None::<&str>)?,
                     &PredefinedMenuItem::separator(app)?,
                     &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
                 ],
@@ -725,6 +794,12 @@ pub fn run() {
                             let _ = win.set_focus();
                         }
                     }
+                    "check_updates" => {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            check_for_updates(app, true).await;
+                        });
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -741,6 +816,18 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Self-update: check shortly after startup (don't compete with the
+            // first poll), then daily. Installs + restarts on its own; the tray
+            // menu's "Check for updates" covers the impatient path.
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                loop {
+                    check_for_updates(update_handle.clone(), false).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
+                }
+            });
 
             // Kick off the poll loop.
             let loop_state = state.clone();

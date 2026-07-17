@@ -47,6 +47,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "resources": ["icons/128x128.png"],
     "icon": [
       "icons/32x32.png",
@@ -55,5 +56,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI2RjhBOEM2RjgzOTkzNDgKUldSSWt6bjR4cWo0dGpjSDBSSTlNdmMweDlLNkd1Y0trTmZjcFNMVXBHYitmMm4xeVVGbWEzckQK",
+      "endpoints": [
+        "https://github.com/cinderblock/claude-usage/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
