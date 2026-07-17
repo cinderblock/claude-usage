@@ -61,7 +61,40 @@ export interface Snapshot {
   tray_percent: number;
   tray_status: string;
   windows: Projection[];
+  session_active: boolean;
   error: string | null;
+}
+
+/** One user-defined scheduled message. */
+export interface ScheduledMessage {
+  id: string;
+  enabled: boolean;
+  time_of_day: string; // "HH:MM" local
+  days: number[]; // 0=Sun … 6=Sat; empty = every day
+  message: string;
+  model: string;
+  only_if_session_inactive: boolean;
+}
+
+/** 5-hour-window priming settings. */
+export interface PrimingConfig {
+  enabled: boolean;
+  anchor_time: string; // "HH:MM" local
+  windows_per_day: number;
+  slot_slack_secs: number;
+  model: string;
+  end_of_day: string | null; // "HH:MM" local, or null
+  prime_prompt: string;
+}
+
+/** Result of one send, for the send log. */
+export interface SendOutcome {
+  ts: number;
+  ok: boolean;
+  model: string;
+  source: string;
+  detail: string;
+  verified: boolean | null;
 }
 
 export interface Config {
@@ -81,6 +114,9 @@ export interface Config {
   history_retention_mb: number;
   history_downsample: boolean;
   history_downsample_after_days: number;
+  claude_binary_path: string;
+  scheduled_messages: ScheduledMessage[];
+  priming: PrimingConfig;
 }
 
 export const getUsage = () => invoke<Snapshot | null>("get_usage");
@@ -95,6 +131,9 @@ export const getHistory = (kind: string, scope: string, since: number) =>
 export const getWindowSummaries = (kind: string, scope: string, since: number) =>
   invoke<WindowSummary[]>("get_window_summaries", { kind, scope, since });
 export const getHistoryStats = () => invoke<HistoryStats | null>("get_history_stats");
+export const sendMessageNow = (message: string, model: string) =>
+  invoke<void>("send_message_now", { message, model });
+export const getSendLog = () => invoke<SendOutcome[]>("get_send_log");
 
 export function prettyKind(kind: string): string {
   switch (kind) {

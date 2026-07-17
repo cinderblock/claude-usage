@@ -46,6 +46,32 @@ limit — both are account-level billing decisions made on claude.ai. A
 is anchored to the calendar-month boundary since the endpoint reports no reset
 time for it.
 
+## Scheduled messages & 5‑hour window priming
+
+Beyond watching usage, the app can *send* to Claude on a schedule — via the local
+Claude Code CLI (`claude -p`), not a raw API call, so it reuses Claude Code's own
+auth and the send counts toward your usage exactly like normal CLI use.
+
+- **Scheduled messages** — a list of prompts, each with a time, weekday set,
+  model, and an optional "skip if a 5‑hour window is already active" gate. A
+  **Send now** button fires any row immediately for testing.
+- **Window priming** — a dedicated mode that sends a tiny **Haiku** message at
+  chosen anchor times so a fresh **5‑hour session window starts early**. Because
+  the 5‑hour window is anchored to your *first* message, priming lets you line
+  the windows up with your day and fit **3 windows in a day instead of 2**. A
+  draggable 24‑hour timeline in Settings shows the primed blocks (blue), your
+  current live window (green), and now (dashed) — drag the anchor to place them.
+  Slots are spaced 5h **plus a few seconds of slack** so a prime always lands
+  just *after* the previous window resets, never on the boundary. A slot is
+  skipped when a window is already running (nothing to start), and every prime is
+  **verified** afterward by re‑polling usage to confirm the window actually went
+  active — unverified sends are flagged in the Settings "Recent sends" log.
+
+Sends go through whatever `claude` binary is on your `PATH` (override the path in
+Settings if needed). Priming deliberately shapes when your rate‑limit windows
+start; it's ordinary personal automation of something you could type by hand, but
+whether to do it is your call under Anthropic's usage policy.
+
 ## Install
 
 **Windows** — grab the latest installer (`.exe` NSIS or `.msi`) from
@@ -93,6 +119,10 @@ default and can be disabled in Settings (`self_refresh_tokens`).
   long-term history, retention/downsampling).
 - `src-tauri/src/metrics.rs` — pace/projection engine (the core signal).
 - `src-tauri/src/alerts.rs` — de-duplicated alert rules (re-arm on window reset).
+- `src-tauri/src/sender.rs` — sends a message by shelling out to `claude -p`
+  (locates the binary, runs it hermetically, summarizes the JSON result).
+- `src-tauri/src/schedule.rs` — pure `due()` evaluator + persisted fire-state
+  (`schedule_state.json`) for scheduled messages and window priming.
 - `src-tauri/src/tray.rs` — renders the color-coded tray badge.
 - `src-tauri/src/lib.rs` — poll loop, tray/menu, windows, Tauri commands + events.
 - `src/routes/+page.svelte` — root page for BOTH windows (see below); renders
@@ -152,6 +182,14 @@ Stored at the app config dir (`config.json`). Editable from the Settings window:
 history retention settings below. Saving emits a `config-updated` event so the
 popup (if also open) picks up the change immediately instead of waiting for its
 next poll.
+
+Sending adds `claude_binary_path` (blank = autodetect `claude`),
+`scheduled_messages` (a list of `{id, enabled, time_of_day, days, message,
+model, only_if_session_inactive}`), and `priming` (`{enabled, anchor_time,
+windows_per_day, slot_slack_secs, model, end_of_day, prime_prompt}`). A separate
+`schedule_state.json` tracks what has already fired so restarts / wake‑from‑sleep
+don't double‑fire or replay a stale slot (a due slot only fires within a 30‑min
+grace window).
 
 ### History retention
 

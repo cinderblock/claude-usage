@@ -3,6 +3,8 @@ pub mod config;
 pub mod credentials;
 pub mod history;
 pub mod metrics;
+pub mod schedule;
+pub mod sender;
 pub mod splat;
 pub mod tray;
 pub mod usage;
@@ -33,7 +35,9 @@ const LOG_KEEP_FILES: usize = 4;
 /// rotation renames old files but never deletes them; without this the log
 /// dir grows forever.
 fn prune_logs(dir: &std::path::Path, keep: usize) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut files: Vec<_> = rd
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "log"))
@@ -56,6 +60,9 @@ pub struct Snapshot {
     pub tray_percent: f64,
     pub tray_status: String,
     pub windows: Vec<Projection>,
+    /// Whether a 5-hour session window is currently running — the gate the
+    /// scheduler uses for "only if session not active" and for priming.
+    pub session_active: bool,
     pub error: Option<String>,
 }
 
@@ -74,8 +81,15 @@ pub struct AppState {
     /// Seconds until the next scheduled poll — poll interval normally,
     /// a backoff delay after failures (respects 429 Retry-After).
     next_delay_secs: Mutex<u64>,
+    /// Recent send outcomes (scheduled messages + primes + manual), newest last.
+    send_log: Mutex<Vec<sender::SendOutcome>>,
+    /// Persisted "already fired" state for the scheduler.
+    schedule_state: Mutex<schedule::ScheduleState>,
     config_dir: PathBuf,
 }
+
+/// Cap on the retained send log so it can't grow without bound.
+const SEND_LOG_MAX: usize = 50;
 
 /// Ensure a usable access token, refreshing + persisting if expired.
 pub async fn ensure_token(client: &reqwest::Client, self_refresh: bool) -> Result<String> {
@@ -97,7 +111,10 @@ fn status_for(p: &Projection, cfg: &Config) -> tray::Status {
         tray::Status::Critical
     } else if p.alert_worthy
         || (p.percent >= cfg.near_cap_pct && p.rate_per_hour.map(|r| r > 0.01).unwrap_or(false))
-        || matches!(p.severity.as_deref(), Some("warning") | Some("critical") | Some("exceeded"))
+        || matches!(
+            p.severity.as_deref(),
+            Some("warning") | Some("critical") | Some("exceeded")
+        )
     {
         tray::Status::Warn
     } else {
@@ -135,7 +152,9 @@ fn next_month_start(now: DateTime<Utc>) -> DateTime<Utc> {
     use chrono::{Datelike, TimeZone};
     let (y, m) = (now.year(), now.month());
     let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
-    Utc.with_ymd_and_hms(ny, nm, 1, 0, 0, 0).single().unwrap_or(now)
+    Utc.with_ymd_and_hms(ny, nm, 1, 0, 0, 0)
+        .single()
+        .unwrap_or(now)
 }
 
 /// Record one sample and project a single window from its recent history.
@@ -166,9 +185,13 @@ fn project_window(
 
     // Only look back within the configured velocity window AND the current
     // window instance (avoid mixing a prior, since-reset series).
-    let vel_start = (now - Duration::minutes((cfg.velocity_window_hours * 60.0) as i64)).timestamp_millis();
+    let vel_start =
+        (now - Duration::minutes((cfg.velocity_window_hours * 60.0) as i64)).timestamp_millis();
     let since = window_start_ms.max(vel_start);
-    let samples = state.history.samples_since(kind, scope_key, since).unwrap_or_default();
+    let samples = state
+        .history
+        .samples_since(kind, scope_key, since)
+        .unwrap_or_default();
 
     let w = WindowState {
         kind,
@@ -188,7 +211,12 @@ fn project_window(
 }
 
 /// Build the set of projections from a usage response + history.
-fn build_projections(state: &AppState, usage: &usage::UsageResponse, now: DateTime<Utc>, cfg: &Config) -> Vec<Projection> {
+fn build_projections(
+    state: &AppState,
+    usage: &usage::UsageResponse,
+    now: DateTime<Utc>,
+    cfg: &Config,
+) -> Vec<Projection> {
     let mut projections = Vec::new();
     for l in &usage.limits {
         projections.push(project_window(
@@ -257,14 +285,29 @@ fn build_projections(state: &AppState, usage: &usage::UsageResponse, now: DateTi
 fn build_menu(app: &tauri::AppHandle, snapshot: &Snapshot) -> tauri::Result<Menu<tauri::Wry>> {
     let mut info_items: Vec<MenuItem<tauri::Wry>> = Vec::new();
     if let Some(plan) = &snapshot.plan {
-        info_items.push(MenuItem::with_id(app, "plan", format!("Claude — {plan}"), false, None::<&str>)?);
+        info_items.push(MenuItem::with_id(
+            app,
+            "plan",
+            format!("Claude — {plan}"),
+            false,
+            None::<&str>,
+        )?);
     }
     for p in &snapshot.windows {
-        let name = p.scope_label.clone().unwrap_or_else(|| metrics::pretty_kind(&p.kind));
+        let name = p
+            .scope_label
+            .clone()
+            .unwrap_or_else(|| metrics::pretty_kind(&p.kind));
         let resets = fmt_hours(p.time_to_reset_hours);
         let flag = if p.alert_worthy { "  ⚠" } else { "" };
         let label = format!("{name}: {:.0}%  · resets {resets}{flag}", p.percent);
-        info_items.push(MenuItem::with_id(app, format!("info_{}_{}", p.kind, p.scope_key), label, false, None::<&str>)?);
+        info_items.push(MenuItem::with_id(
+            app,
+            format!("info_{}_{}", p.kind, p.scope_key),
+            label,
+            false,
+            None::<&str>,
+        )?);
     }
 
     let sep1 = PredefinedMenuItem::separator(app)?;
@@ -272,7 +315,13 @@ fn build_menu(app: &tauri::AppHandle, snapshot: &Snapshot) -> tauri::Result<Menu
     let open = MenuItem::with_id(app, "open", "Open window", true, None::<&str>)?;
     let history = MenuItem::with_id(app, "history", "History", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
-    let updates = MenuItem::with_id(app, "check_updates", "Check for updates", true, None::<&str>)?;
+    let updates = MenuItem::with_id(
+        app,
+        "check_updates",
+        "Check for updates",
+        true,
+        None::<&str>,
+    )?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
@@ -323,7 +372,10 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
                 s.windows
                     .iter()
                     .map(|p| {
-                        let name = p.scope_label.clone().unwrap_or_else(|| metrics::pretty_kind(&p.kind));
+                        let name = p
+                            .scope_label
+                            .clone()
+                            .unwrap_or_else(|| metrics::pretty_kind(&p.kind));
                         format!("{name} {:.0}%→~{:.0}%", p.percent, p.projected_final_pct)
                     })
                     .collect::<Vec<_>>()
@@ -371,6 +423,7 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
                     tray_percent: 0.0,
                     tray_status: "unknown".into(),
                     windows: vec![],
+                    session_active: false,
                     error: Some(error),
                 },
             }
@@ -400,7 +453,11 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
         for a in &alerts {
             log::info!(
                 "alert fired{}: {} — {}",
-                if cfg.notifications_enabled { "" } else { " (notifications off)" },
+                if cfg.notifications_enabled {
+                    ""
+                } else {
+                    " (notifications off)"
+                },
                 a.title,
                 a.body
             );
@@ -444,13 +501,15 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
 fn apply_retention(state: &AppState, cfg: &config::Config, now: DateTime<Utc>) {
     use config::RetentionMode;
     if cfg.history_downsample {
-        let before = (now - Duration::days(cfg.history_downsample_after_days as i64)).timestamp_millis();
+        let before =
+            (now - Duration::days(cfg.history_downsample_after_days as i64)).timestamp_millis();
         let _ = state.history.downsample_before(before);
     }
     match cfg.history_retention_mode {
         RetentionMode::Unlimited => {}
         RetentionMode::Time => {
-            let before = (now - Duration::days(cfg.history_retention_days.max(1) as i64)).timestamp_millis();
+            let before =
+                (now - Duration::days(cfg.history_retention_days.max(1) as i64)).timestamp_millis();
             let _ = state.history.prune(before);
         }
         RetentionMode::Size => {
@@ -502,6 +561,16 @@ async fn run_fetch(state: &AppState, cfg: &Config, now: DateTime<Utc>) -> Result
         .find(|p| p.kind == "session")
         .map(|p| p.percent)
         .unwrap_or(usage.five_hour.utilization);
+
+    // A 5h window is "active" if the API flags it, or there's session usage with
+    // a still-future reset. Feeds the scheduler's session-active gate + priming.
+    let session_active = usage
+        .limits
+        .iter()
+        .find(|l| l.kind == "session")
+        .map(|l| l.is_active || (l.percent > 0.0 && l.resets_at.map(|r| r > now).unwrap_or(false)))
+        .unwrap_or(false);
+
     Ok(Snapshot {
         generated_at: now,
         plan: state.plan.lock().unwrap().clone(),
@@ -509,6 +578,7 @@ async fn run_fetch(state: &AppState, cfg: &Config, now: DateTime<Utc>) -> Result
         // Provisional: poll_once recomputes this once alert latches are set.
         tray_status: status_label(tray::Status::Ok).into(),
         windows: projections,
+        session_active,
         error: None,
     })
 }
@@ -609,10 +679,128 @@ fn tooltip(s: &Snapshot) -> String {
     }
     let mut parts = Vec::new();
     for p in &s.windows {
-        let name = p.scope_label.clone().unwrap_or_else(|| metrics::pretty_kind(&p.kind));
+        let name = p
+            .scope_label
+            .clone()
+            .unwrap_or_else(|| metrics::pretty_kind(&p.kind));
         parts.push(format!("{name} {:.0}%", p.percent));
     }
     format!("Claude Usage · {}", parts.join(" · "))
+}
+
+// ---- Scheduled sending + priming ----
+
+/// Append a send outcome to the capped log and notify any open window.
+fn push_send_log(app: &tauri::AppHandle, state: &AppState, outcome: sender::SendOutcome) {
+    {
+        let mut log = state.send_log.lock().unwrap();
+        log.push(outcome);
+        let overflow = log.len().saturating_sub(SEND_LOG_MAX);
+        if overflow > 0 {
+            log.drain(0..overflow);
+        }
+    }
+    let _ = app.emit("send-log-updated", ());
+}
+
+/// After a prime, confirm a fresh 5h session window actually started. Polls
+/// usage a few times (the endpoint lags the send by a few seconds). Best-effort:
+/// a `false` here just marks the send-log row as unverified.
+async fn verify_session_started(state: &AppState, cfg: &Config) -> bool {
+    for attempt in 0..3u32 {
+        let wait = if attempt == 0 { 8 } else { 12 };
+        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+        let Ok(token) = ensure_token(&state.client, cfg.self_refresh_tokens).await else {
+            continue;
+        };
+        if let Ok(Some(usage)) = usage::fetch_usage(&state.client, &token).await {
+            let active = usage
+                .limits
+                .iter()
+                .find(|l| l.kind == "session")
+                .map(|l| l.is_active || l.percent > 0.0)
+                .unwrap_or(false);
+            if active {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// One scheduler pass: fire everything due, honoring the session-active gate,
+/// and persist the fire state. Runs on its own ~30s timer beside the poll loop.
+async fn scheduler_tick(app: &tauri::AppHandle, state: &Arc<AppState>) {
+    let cfg = state.config.lock().unwrap().clone();
+    if cfg.scheduled_messages.is_empty() && !cfg.priming.enabled {
+        return;
+    }
+    let session_active = state
+        .latest
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| s.session_active)
+        .unwrap_or(false);
+
+    let now = chrono::Local::now();
+    let jobs = {
+        let st = state.schedule_state.lock().unwrap();
+        schedule::due(now, &cfg, &st, session_active)
+    };
+    if jobs.is_empty() {
+        return;
+    }
+
+    let bin = sender::resolve_binary(&cfg.claude_binary_path);
+    for job in jobs {
+        let now_ms = Utc::now().timestamp_millis();
+        // Fire-once: record before acting so a crash mid-send can't replay it.
+        state.schedule_state.lock().unwrap().mark(&job, now_ms);
+
+        if job.skip {
+            log::info!(
+                "schedule: {} due but skipped (5h window already active)",
+                job.source
+            );
+            continue;
+        }
+        let Some(ref bin) = bin else {
+            log::warn!("schedule: {} due but claude CLI not found", job.source);
+            push_send_log(
+                app,
+                state,
+                sender::SendOutcome {
+                    ts: now_ms,
+                    ok: false,
+                    model: job.model.clone(),
+                    source: job.source.clone(),
+                    detail: "claude CLI not found — set its path in Settings".into(),
+                    verified: None,
+                },
+            );
+            continue;
+        };
+
+        let mut outcome = sender::send(bin, &job.message, &job.model, &job.source).await;
+        log::info!(
+            "schedule send {}: ok={} — {}",
+            job.source,
+            outcome.ok,
+            outcome.detail
+        );
+        if job.is_prime && outcome.ok {
+            outcome.verified = Some(verify_session_started(state, &cfg).await);
+            if outcome.verified == Some(false) {
+                log::warn!("prime {} sent but no active 5h window observed", job.source);
+            }
+        }
+        push_send_log(app, state, outcome);
+    }
+
+    if let Err(e) = state.schedule_state.lock().unwrap().save(&state.config_dir) {
+        log::warn!("failed to persist schedule state: {e}");
+    }
 }
 
 // ---- Tauri commands ----
@@ -622,8 +810,38 @@ fn get_usage(state: tauri::State<'_, Arc<AppState>>) -> Option<Snapshot> {
     state.latest.lock().unwrap().clone()
 }
 
+/// Send a message right now (Settings' "Send now" / per-row test). Returns the
+/// error detail on failure so the UI can show it.
 #[tauri::command]
-async fn refresh_now(app: tauri::AppHandle, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+async fn send_message_now(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    message: String,
+    model: String,
+) -> Result<(), String> {
+    let bin_path = state.config.lock().unwrap().claude_binary_path.clone();
+    let bin = sender::resolve_binary(&bin_path)
+        .ok_or_else(|| "claude CLI not found — set its path in Settings".to_string())?;
+    let outcome = sender::send(&bin, &message, &model, "manual").await;
+    let (ok, detail) = (outcome.ok, outcome.detail.clone());
+    push_send_log(&app, state.inner(), outcome);
+    if ok {
+        Ok(())
+    } else {
+        Err(detail)
+    }
+}
+
+#[tauri::command]
+fn get_send_log(state: tauri::State<'_, Arc<AppState>>) -> Vec<sender::SendOutcome> {
+    state.send_log.lock().unwrap().clone()
+}
+
+#[tauri::command]
+async fn refresh_now(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
     poll_once(app, state.inner().clone()).await;
     Ok(())
 }
@@ -642,7 +860,10 @@ fn get_history(
     scope: String,
     since: i64,
 ) -> Vec<history::Sample> {
-    state.history.samples_since(&kind, &scope, since).unwrap_or_default()
+    state
+        .history
+        .samples_since(&kind, &scope, since)
+        .unwrap_or_default()
 }
 
 /// Peak-per-instance summaries for one window (powers the History window's
@@ -654,7 +875,10 @@ fn get_window_summaries(
     scope: String,
     since: i64,
 ) -> Vec<history::WindowSummary> {
-    state.history.window_summaries(&kind, &scope, since).unwrap_or_default()
+    state
+        .history
+        .window_summaries(&kind, &scope, since)
+        .unwrap_or_default()
 }
 
 /// Store-wide history stats (row count, span, on-disk size). Powers the
@@ -678,7 +902,11 @@ fn test_notification(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_config(app: tauri::AppHandle, state: tauri::State<'_, Arc<AppState>>, config: Config) -> Result<(), String> {
+fn set_config(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    config: Config,
+) -> Result<(), String> {
     config.save(&state.config_dir).map_err(|e| e.to_string())?;
     *state.config.lock().unwrap() = config.clone();
     // Let any other open window (e.g. the main popup, if Settings is edited
@@ -689,7 +917,9 @@ fn set_config(app: tauri::AppHandle, state: tauri::State<'_, Arc<AppState>>, con
 
 #[tauri::command]
 fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
-    let win = app.get_webview_window("settings").ok_or("settings window missing")?;
+    let win = app
+        .get_webview_window("settings")
+        .ok_or("settings window missing")?;
     win.show().map_err(|e| e.to_string())?;
     win.set_focus().map_err(|e| e.to_string())?;
     Ok(())
@@ -697,7 +927,9 @@ fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
-    let win = app.get_webview_window("history").ok_or("history window missing")?;
+    let win = app
+        .get_webview_window("history")
+        .ok_or("history window missing")?;
     win.show().map_err(|e| e.to_string())?;
     win.set_focus().map_err(|e| e.to_string())?;
     Ok(())
@@ -759,7 +991,9 @@ pub fn run() {
             set_config,
             test_notification,
             open_settings_window,
-            open_history_window
+            open_history_window,
+            send_message_now,
+            get_send_log
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
@@ -789,15 +1023,25 @@ pub fn run() {
             }
             log::info!("claude-usage v{} starting", env!("CARGO_PKG_VERSION"));
 
-            let config_dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let config_dir = app
+                .path()
+                .app_config_dir()
+                .unwrap_or_else(|_| PathBuf::from("."));
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| PathBuf::from("."));
             let cfg = Config::load(&config_dir);
             log::info!(
                 "config: poll={}s margin={}m velocity={}h sustain={}m confidence={}",
-                cfg.poll_interval_secs, cfg.projection_margin_mins, cfg.velocity_window_hours,
-                cfg.alert_sustain_mins, cfg.cap_confidence
+                cfg.poll_interval_secs,
+                cfg.projection_margin_mins,
+                cfg.velocity_window_hours,
+                cfg.alert_sustain_mins,
+                cfg.cap_confidence
             );
             let history = history::History::open(&data_dir).expect("open history db");
+            let sched_state = schedule::ScheduleState::load(&config_dir);
 
             let initial_delay = cfg.poll_interval_secs.max(MIN_POLL_SECS);
             let state = Arc::new(AppState {
@@ -810,6 +1054,8 @@ pub fn run() {
                 plan_attempts: Mutex::new(0),
                 consecutive_errors: Mutex::new(0),
                 next_delay_secs: Mutex::new(initial_delay),
+                send_log: Mutex::new(Vec::new()),
+                schedule_state: Mutex::new(sched_state),
                 config_dir,
             });
             app.manage(state.clone());
@@ -823,7 +1069,13 @@ pub fn run() {
                     &MenuItem::with_id(app, "open", "Open window", true, None::<&str>)?,
                     &MenuItem::with_id(app, "history", "History", true, None::<&str>)?,
                     &MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "check_updates", "Check for updates", true, None::<&str>)?,
+                    &MenuItem::with_id(
+                        app,
+                        "check_updates",
+                        "Check for updates",
+                        true,
+                        None::<&str>,
+                    )?,
                     &PredefinedMenuItem::separator(app)?,
                     &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
                 ],
@@ -901,6 +1153,18 @@ pub fn run() {
                     // delay after failures.
                     let secs = (*loop_state.next_delay_secs.lock().unwrap()).max(MIN_POLL_SECS);
                     tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                }
+            });
+
+            // Scheduler loop: fire due scheduled messages / window primes. Ticks
+            // every 30s; sleeps first so the first poll has populated
+            // `session_active` before anything can fire.
+            let sched_app = app.handle().clone();
+            let sched_state = state.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    scheduler_tick(&sched_app, &sched_state).await;
                 }
             });
 

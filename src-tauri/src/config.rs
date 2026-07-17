@@ -51,6 +51,93 @@ pub struct Config {
     /// Only downsample samples older than this many days (recent history stays at
     /// full poll fidelity so the live charts are unaffected).
     pub history_downsample_after_days: u32,
+
+    // ---- Sending (scheduled messages + window priming) ----
+    /// Path to the Claude Code CLI used for sending. Empty = autodetect
+    /// (`claude` on PATH, then `~/.local/bin/claude*`).
+    pub claude_binary_path: String,
+    /// User-defined scheduled prompts.
+    pub scheduled_messages: Vec<ScheduledMessage>,
+    /// 5-hour-window priming settings.
+    pub priming: PrimingConfig,
+}
+
+/// Default `claude --model` value for new sends — the cheapest model, since a
+/// prime only needs to *start* the shared 5h window, not do real work.
+fn default_model() -> String {
+    "haiku".to_string()
+}
+
+/// One user-defined scheduled message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScheduledMessage {
+    /// Stable id, generated when the row is created in the UI. Keys the
+    /// persisted "last fired" state so edits/reorders don't double-fire.
+    pub id: String,
+    pub enabled: bool,
+    /// Local wall-clock time, "HH:MM".
+    pub time_of_day: String,
+    /// Weekdays this fires on: 0=Sun … 6=Sat. Empty = every day.
+    pub days: Vec<u8>,
+    /// The prompt sent to `claude -p`.
+    pub message: String,
+    /// `claude --model` value (alias like "haiku" or a full model id).
+    pub model: String,
+    /// Skip the send when a 5h session window is already active.
+    pub only_if_session_inactive: bool,
+}
+
+impl Default for ScheduledMessage {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            enabled: true,
+            time_of_day: "09:00".into(),
+            days: Vec::new(),
+            message: String::new(),
+            model: default_model(),
+            only_if_session_inactive: false,
+        }
+    }
+}
+
+/// 5-hour-window priming: send a tiny message at anchor + k·(5h + slack) so a
+/// fresh session window starts early, letting the day hold 3 windows instead of 2.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrimingConfig {
+    pub enabled: bool,
+    /// Local "HH:MM" the first 5h window of the day should start.
+    pub anchor_time: String,
+    /// How many windows to prime per day (slots at anchor + k·step, k in 0..N).
+    pub windows_per_day: u8,
+    /// Seconds of slack added to each 5h step so a prime lands just *after* the
+    /// previous window has surely reset, never exactly on the boundary where
+    /// timing jitter could drop it into the old window (wasted) or race the
+    /// reset. Small on purpose — a few seconds is enough.
+    pub slot_slack_secs: u32,
+    /// `claude --model` for prime messages.
+    pub model: String,
+    /// Optional local "HH:MM"; slots at/after this are dropped.
+    pub end_of_day: Option<String>,
+    /// The tiny prompt used to prime. Kept text-only so a headless run never
+    /// triggers a tool/permission prompt that could hang.
+    pub prime_prompt: String,
+}
+
+impl Default for PrimingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            anchor_time: "06:00".into(),
+            windows_per_day: 3,
+            slot_slack_secs: 15,
+            model: default_model(),
+            end_of_day: None,
+            prime_prompt: "Reply with just: ok".into(),
+        }
+    }
 }
 
 /// How the history store decides what to keep.
@@ -84,6 +171,9 @@ impl Default for Config {
             history_retention_mb: 100,
             history_downsample: false,
             history_downsample_after_days: 60,
+            claude_binary_path: String::new(),
+            scheduled_messages: Vec::new(),
+            priming: PrimingConfig::default(),
         }
     }
 }
