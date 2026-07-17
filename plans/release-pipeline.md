@@ -42,15 +42,31 @@ self-updates from GitHub Releases.
    swapped via `git reset --mixed`.
 3. [x] Working-copy scrub applied (plans + usage.rs) +
    `claude-usage-watcher.md` brought current.
-4. [ ] `gh repo create cinderblock/claude-usage --public --source . --push`.
-   ← current
-5. [ ] Updater: plugin deps + init, `createUpdaterArtifacts`, pubkey + endpoint
-   in `tauri.conf.json`, startup + tray-menu update check, signing keys,
-   `gh secret set`.
-6. [ ] CI: `.github/workflows/ci.yml` (check + test on push/PR) and
-   `release.yml` (tauri-action on `v*` tags → GitHub Release + `latest.json`).
-7. [ ] README: install / update / build / CI sections.
-8. [ ] Tag `v0.1.0`, watch the release build go green, verify `latest.json`.
+4. [x] Published: https://github.com/cinderblock/claude-usage (public; only
+   `main` pushed — `backup/pre-scrub` stays local).
+5. [x] Updater: tauri-plugin-updater wired in `lib.rs` (check 20s after
+   startup + daily + "Check for updates" tray item), `createUpdaterArtifacts`,
+   pubkey + GitHub `latest.json` endpoint in `tauri.conf.json`; key at
+   `~/.tauri/claude-usage.key` (+ `.password` beside it), both set as repo
+   Actions secrets.
+6. [x] CI + release workflows added; local `npm run check` + `cargo test`
+   (14/14) green first.
+7. [x] README: install / self-update / CI + release docs; chart wording fixed.
+8. [x] v0.1.0 released (2026-07-16): CI green (after adding `@types/node` —
+   CI had no Node types where local hoisting hid the gap), release workflow
+   green, assets = NSIS exe + MSI + `.sig`s + `latest.json`;
+   `releases/latest/download/latest.json` verified serving per-platform
+   signatures matching the configured endpoint.
+
+## Remaining / follow-ups
+
+- The install-and-restart update path can only be exercised end-to-end by the
+  NEXT release: bump versions (`tauri.conf.json`, `Cargo.toml`,
+  `package.json`), tag `v0.1.1`, and a running v0.1.0 should toast + restart.
+- The currently-running local instance predates the updater — install v0.1.0
+  from the release once to get onto the update train.
+- Local-only leftovers, keep until confident: branch `backup/pre-scrub` and
+  stash "pre-history-rewrite snapshot" (unscrubbed history — never push).
 
 ## Findings / gotchas
 
@@ -73,6 +89,16 @@ self-updates from GitHub Releases.
   `uv tool install git-filter-repo` (uv 0.10.4 present).
 - filter-repo hard-resets the working tree in a non-bare repo → NEVER run it in
   the main worktree; temp clone + ref swap instead.
+- First signing keypair had to be discarded: its random password lived only in
+  a shell variable and the file write silently misbound (PowerShell
+  `Set-Content -NoNewline <path> <value>` bound the VALUE as the path,
+  creating a stray password-named file in the repo root — deleted, never
+  committed). Regenerated writing the password file first and verifying;
+  pipeline form (`... | Set-Content -NoNewline $file`) binds correctly.
+- Local `cargo test` (and CI's) needs the frontend built first:
+  `tauri::generate_context!` embeds `../build` at compile time.
+- Stale `@ts-expect-error` in `vite.config.js` failed `svelte-check` — the
+  `process` global apparently typed now; removed.
 
 ## Things not to do
 
