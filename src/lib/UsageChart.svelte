@@ -15,6 +15,7 @@
     endMs,
     nowMs,
     yCap = 150,
+    markDays = false,
   }: {
     series: ChartSeries[];
     startMs: number;
@@ -22,6 +23,8 @@
     nowMs: number;
     /** Hard ceiling on the y-axis (100 for a real dollar cap, ~150 otherwise). */
     yCap?: number;
+    /** Draw local-date boundaries and weekend shading (for multi-day windows). */
+    markDays?: boolean;
   } = $props();
 
   // Measured pixel width → crisp strokes (no viewBox distortion).
@@ -48,6 +51,26 @@
 
   const xOf = (ts: number) => ((ts - startMs) / span) * w;
   const yOf = (pct: number) => H - (Math.min(Math.max(pct, 0), yMax) / yMax) * H;
+  const clampX = (x: number) => Math.max(0, Math.min(w, x));
+
+  // Local-date segments spanning the window: one per calendar day (DST-aware via
+  // the Date constructor), tagged as weekend for background shading.
+  const days = $derived.by(() => {
+    if (!markDays) return [] as { start: number; end: number; weekend: boolean }[];
+    const midnight = (ts: number) => {
+      const d = new Date(ts);
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    };
+    const segs: { start: number; end: number; weekend: boolean }[] = [];
+    for (let t = midnight(startMs); t < endMs; ) {
+      const d = new Date(t);
+      const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
+      const dow = d.getDay(); // 0 Sun … 6 Sat
+      segs.push({ start: t, end: next, weekend: dow === 0 || dow === 6 });
+      t = next;
+    }
+    return segs;
+  });
 
   function linePath(samples: Sample[]): string {
     if (!samples.length) return "";
@@ -59,6 +82,18 @@
 
 <div class="chart" bind:clientWidth={w}>
   <svg width={w} height={H} role="img">
+    <!-- weekend shading + local-date boundaries (multi-day windows only) -->
+    {#each days as d (d.start)}
+      {#if d.weekend}
+        <rect x={clampX(xOf(d.start))} y="0" width={clampX(xOf(d.end)) - clampX(xOf(d.start))} height={H} class="weekend" />
+      {/if}
+    {/each}
+    {#each days as d (d.start)}
+      {@const x = xOf(d.start)}
+      {#if x > 0.5 && x < w - 0.5}
+        <line x1={x} y1="0" x2={x} y2={H} class="day-edge" />
+      {/if}
+    {/each}
     <!-- even-pace reference: 0% at window start → 100% at reset -->
     <line x1={xOf(startMs)} y1={yOf(0)} x2={xOf(endMs)} y2={yOf(100)} class="pace" />
     <!-- 100% ceiling -->
@@ -99,6 +134,16 @@
   svg {
     display: block;
     overflow: visible;
+  }
+  .weekend {
+    fill: #ffffff;
+    opacity: 0.04;
+  }
+  .day-edge {
+    stroke: #9aa0aa;
+    stroke-width: 1;
+    stroke-dasharray: 2 3;
+    opacity: 0.18;
   }
   .pace {
     stroke: #6b7280;
