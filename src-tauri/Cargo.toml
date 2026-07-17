@@ -1,6 +1,6 @@
 [package]
 name = "claude-usage"
-version = "0.1.0"
+version = "0.2.0"
 description = "Watches Claude subscription usage and surfaces a custom tray UI"
 authors = ["Cameron Tacklind"]
 edition = "2021"
