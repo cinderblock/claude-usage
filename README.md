@@ -9,11 +9,12 @@ check where you stand.
 - Lives in the system tray with a color-coded badge showing your live **5‑hour**
   utilization.
 - Left‑click the tray → a compact popup with every limit window (5‑hour, weekly,
-  and per‑model weekly), each with a bar, a live reset countdown, and a
-  projection line. Bars span 0–150% with the cap marked at the 2/3 point, so an
-  overshooting projection (ghost fill + marker, with a likely‑range band) stays
-  visible past 100%.
-- Right‑click → a menu breakdown of every window + Refresh / Open / Settings / Quit.
+  per‑model weekly, and the billing pool), each drawn as a usage-over-time
+  chart: the actual usage line, a dashed even‑pace diagonal (above it = burning
+  too fast), the projected path to the reset with its likely‑range band, and a
+  live reset countdown. Windows on the same timescale share one chart.
+- Right‑click → a menu breakdown of every window + Refresh / Open / Settings /
+  Check for updates / Quit.
 - A gear icon (or the tray's **Settings** menu item) opens Settings in its own
   resizable window, separate from the popup.
 - Native notifications when a window is **projected to run out before it resets**.
@@ -31,13 +32,23 @@ near‑cap nudge are secondary signals.
 
 If you have usage-based ("extra") billing enabled on your account, its monthly
 credit pool shows up automatically as its own window — spent vs. limit in
-dollars, percent used, and the same projection treatment, except its bar tops
-out at 100% (a real dollar cap, not a rolling window that can run over). There
+dollars, percent used, and the same projection treatment, except its chart caps
+at 100% (a real dollar cap, not a rolling window that can run over). There
 is no in-app control for enabling/disabling the pool or changing its dollar
 limit — both are account-level billing decisions made on claude.ai. A
 **Change limit ↗** link opens `claude.ai/new#settings/usage` for that. The pool
 is anchored to the calendar-month boundary since the endpoint reports no reset
 time for it.
+
+## Install
+
+Grab the latest Windows installer (`.exe` NSIS or `.msi`) from
+[Releases](https://github.com/cinderblock/claude-usage/releases). After that
+the app keeps itself current: it checks for a new signed release shortly after
+launch and then daily, installs it, and restarts — or on demand via the tray's
+**Check for updates**. Windows is the only tested platform so far; the code has
+no known Windows-isms, so macOS/Linux builds are likely a matter of adding CI
+targets.
 
 ## How it reads usage
 
@@ -78,6 +89,16 @@ cargo test --lib         # (in src-tauri/) projection unit tests
 npm run tauri build
 ```
 
+## CI & releases
+
+- `ci.yml` — every push/PR: `svelte-check` + frontend build (ubuntu), `cargo
+  test` (windows).
+- `release.yml` — push a `v*` tag matching the version in `tauri.conf.json` /
+  `Cargo.toml` and it builds the Windows installers, signs the updater
+  artifacts (repo secrets `TAURI_SIGNING_PRIVATE_KEY` +
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), and publishes a GitHub Release
+  including the `latest.json` manifest the in-app updater polls.
+
 ## Windows
 
 Two windows, both defined in `tauri.conf.json` and hidden at startup:
@@ -107,7 +128,7 @@ immediately instead of waiting for its next poll.
 ### Projection uncertainty
 
 The burn-velocity fit also yields a standard error, which propagates into a
-10th–90th percentile band around the projected final % (shown on the bar) and a
+10th–90th percentile band around the projected final % (shown on the chart) and a
 **cap probability** — the area under the rate distribution beyond the rate that
 would hit the cap early. Alerts require that probability to reach
 `cap_confidence`, so a mean projection that barely crosses the wall on a noisy
