@@ -270,6 +270,7 @@ fn build_menu(app: &tauri::AppHandle, snapshot: &Snapshot) -> tauri::Result<Menu
     let sep1 = PredefinedMenuItem::separator(app)?;
     let refresh = MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open window", true, None::<&str>)?;
+    let history = MenuItem::with_id(app, "history", "History", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let updates = MenuItem::with_id(app, "check_updates", "Check for updates", true, None::<&str>)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
@@ -282,6 +283,7 @@ fn build_menu(app: &tauri::AppHandle, snapshot: &Snapshot) -> tauri::Result<Menu
     refs.push(&sep1);
     refs.push(&refresh);
     refs.push(&open);
+    refs.push(&history);
     refs.push(&settings);
     refs.push(&updates);
     refs.push(&sep2);
@@ -433,10 +435,29 @@ pub async fn poll_once(app: tauri::AppHandle, state: Arc<AppState>) {
     *state.latest.lock().unwrap() = Some(snapshot.clone());
     let _ = app.emit("usage-updated", &snapshot);
 
-    // Keep history bounded (30 days).
-    let _ = state
-        .history
-        .prune((now - Duration::days(30)).timestamp_millis());
+    apply_retention(&state, &cfg, now);
+}
+
+/// Enforce the configured history retention + downsampling. History is kept in
+/// full by default; the user can opt into thinning old data and/or an age/size
+/// cap. Only ever touches data older than the active window instances.
+fn apply_retention(state: &AppState, cfg: &config::Config, now: DateTime<Utc>) {
+    use config::RetentionMode;
+    if cfg.history_downsample {
+        let before = (now - Duration::days(cfg.history_downsample_after_days as i64)).timestamp_millis();
+        let _ = state.history.downsample_before(before);
+    }
+    match cfg.history_retention_mode {
+        RetentionMode::Unlimited => {}
+        RetentionMode::Time => {
+            let before = (now - Duration::days(cfg.history_retention_days.max(1) as i64)).timestamp_millis();
+            let _ = state.history.prune(before);
+        }
+        RetentionMode::Size => {
+            let target = (cfg.history_retention_mb.max(1) as i64) * 1024 * 1024;
+            let _ = state.history.prune_to_size(target);
+        }
+    }
 }
 
 async fn run_fetch(state: &AppState, cfg: &Config, now: DateTime<Utc>) -> Result<Snapshot> {
@@ -624,6 +645,25 @@ fn get_history(
     state.history.samples_since(&kind, &scope, since).unwrap_or_default()
 }
 
+/// Peak-per-instance summaries for one window (powers the History window's
+/// default view — one point per 5h block / week / month).
+#[tauri::command]
+fn get_window_summaries(
+    state: tauri::State<'_, Arc<AppState>>,
+    kind: String,
+    scope: String,
+    since: i64,
+) -> Vec<history::WindowSummary> {
+    state.history.window_summaries(&kind, &scope, since).unwrap_or_default()
+}
+
+/// Store-wide history stats (row count, span, on-disk size). Powers the
+/// retention estimate in Settings.
+#[tauri::command]
+fn get_history_stats(state: tauri::State<'_, Arc<AppState>>) -> Option<history::HistoryStats> {
+    state.history.stats().ok()
+}
+
 #[tauri::command]
 fn test_notification(app: tauri::AppHandle) -> Result<(), String> {
     let mut b = app
@@ -650,6 +690,14 @@ fn set_config(app: tauri::AppHandle, state: tauri::State<'_, Arc<AppState>>, con
 #[tauri::command]
 fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     let win = app.get_webview_window("settings").ok_or("settings window missing")?;
+    win.show().map_err(|e| e.to_string())?;
+    win.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
+    let win = app.get_webview_window("history").ok_or("history window missing")?;
     win.show().map_err(|e| e.to_string())?;
     win.set_focus().map_err(|e| e.to_string())?;
     Ok(())
@@ -706,9 +754,12 @@ pub fn run() {
             refresh_now,
             get_config,
             get_history,
+            get_window_summaries,
+            get_history_stats,
             set_config,
             test_notification,
-            open_settings_window
+            open_settings_window,
+            open_history_window
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
@@ -765,6 +816,7 @@ pub fn run() {
                 &[
                     &MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?,
                     &MenuItem::with_id(app, "open", "Open window", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "history", "History", true, None::<&str>)?,
                     &MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?,
                     &MenuItem::with_id(app, "check_updates", "Check for updates", true, None::<&str>)?,
                     &PredefinedMenuItem::separator(app)?,
@@ -788,6 +840,12 @@ pub fn run() {
                         }
                     }
                     "open" => toggle_window(app),
+                    "history" => {
+                        if let Some(win) = app.get_webview_window("history") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
                     "settings" => {
                         if let Some(win) = app.get_webview_window("settings") {
                             let _ = win.show();

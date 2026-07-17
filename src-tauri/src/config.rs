@@ -37,6 +37,32 @@ pub struct Config {
     pub self_refresh_tokens: bool,
     /// Master switch for OS notifications.
     pub notifications_enabled: bool,
+    /// How the long-term history store is bounded: keep everything
+    /// (`"unlimited"`), cap by age (`"time"`), or cap by on-disk size (`"size"`).
+    pub history_retention_mode: RetentionMode,
+    /// Age cap in days, when `history_retention_mode == Time`.
+    pub history_retention_days: u32,
+    /// On-disk cap in megabytes, when `history_retention_mode == Size`.
+    pub history_retention_mb: u32,
+    /// When on, samples older than `history_downsample_after_days` are thinned to
+    /// one (peak-preserving) point per hour per window instance. Off by default —
+    /// full fidelity is kept for every retained sample.
+    pub history_downsample: bool,
+    /// Only downsample samples older than this many days (recent history stays at
+    /// full poll fidelity so the live charts are unaffected).
+    pub history_downsample_after_days: u32,
+}
+
+/// How the history store decides what to keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RetentionMode {
+    /// Never prune — keep every sample forever.
+    Unlimited,
+    /// Prune samples older than `history_retention_days`.
+    Time,
+    /// Prune oldest samples to keep the DB under `history_retention_mb`.
+    Size,
 }
 
 impl Default for Config {
@@ -53,6 +79,11 @@ impl Default for Config {
             use_api_severity: true,
             self_refresh_tokens: true,
             notifications_enabled: true,
+            history_retention_mode: RetentionMode::Unlimited,
+            history_retention_days: 365,
+            history_retention_mb: 100,
+            history_downsample: false,
+            history_downsample_after_days: 60,
         }
     }
 }

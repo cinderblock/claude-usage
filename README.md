@@ -13,10 +13,16 @@ check where you stand.
   chart: the actual usage line, a dashed even‑pace diagonal (above it = burning
   too fast), the projected path to the reset with its likely‑range band, and a
   live reset countdown. Windows on the same timescale share one chart.
-- Right‑click → a menu breakdown of every window + Refresh / Open / Settings /
-  Check for updates / Quit.
+- Right‑click → a menu breakdown of every window + Refresh / Open / History /
+  Settings / Check for updates / Quit.
 - A gear icon (or the tray's **Settings** menu item) opens Settings in its own
   resizable window, separate from the popup.
+- A clock icon (or the tray's **History** menu item) opens the **History**
+  window: pick any usage window (5‑hour, weekly, per‑model, billing) and see
+  one bar per completed period — the peak % it reached — over 30 days / 90
+  days / 1 year / all time. Click a bar to drill into that period's raw
+  usage curve. Samples are kept forever by default (see
+  [History retention](#history-retention)).
 - Native notifications when a window is **projected to run out before it resets**.
 
 ### Alerting is velocity-based, not threshold-based
@@ -65,7 +71,8 @@ in sync. This is on by default and can be disabled in Settings
 
 - `src-tauri/src/credentials.rs` — read/refresh/persist the local OAuth token.
 - `src-tauri/src/usage.rs` — HTTP client + models for the usage/profile endpoints.
-- `src-tauri/src/history.rs` — SQLite time-series of samples (for velocity).
+- `src-tauri/src/history.rs` — SQLite time-series of samples (velocity fits,
+  long-term history, retention/downsampling).
 - `src-tauri/src/metrics.rs` — pace/projection engine (the core signal).
 - `src-tauri/src/alerts.rs` — de-duplicated alert rules (re-arm on window reset).
 - `src-tauri/src/tray.rs` — renders the color-coded tray badge.
@@ -101,14 +108,16 @@ npm run tauri build
 
 ## Windows
 
-Two windows, both defined in `tauri.conf.json` and hidden at startup:
+Three windows, all defined in `tauri.conf.json` and hidden at startup:
 - **`main`** — the frameless, always-on-top popup toggled by clicking the tray
   icon; hides on blur.
 - **`settings`** — a normal, resizable, native-chrome window opened via the
   popup's gear icon or the tray menu's "Settings" entry; stays open on blur
-  since you may want to leave it up while checking values elsewhere. Both hide
-  (rather than close) so reopening is instant and the app keeps running via
-  the tray.
+  since you may want to leave it up while checking values elsewhere.
+- **`history`** — a larger resizable window (popup clock icon or the tray's
+  "History") graphing long-term usage: peak-per-period bars with click-to-drill
+  raw curves. All hide (rather than close) so reopening is instant and the app
+  keeps running via the tray.
 
 Since the frontend is SPA-only (`ssr = false` + a static fallback shell —
 see [SvelteKit docs](https://svelte.dev/docs/kit/single-page-apps)), both
@@ -121,9 +130,30 @@ to `SettingsPanel.svelte`.
 Stored at the app config dir (`config.json`). Editable from the Settings window:
 `poll_interval_secs` (120), `projection_margin_mins` (30), `velocity_window_hours`
 (6), `near_cap_pct` (95), `cap_confidence` (0.75), `alert_sustain_mins` (10),
-`use_api_severity`, `self_refresh_tokens`, `notifications_enabled`. Saving emits
-a `config-updated` event so the popup (if also open) picks up the change
-immediately instead of waiting for its next poll.
+`use_api_severity`, `self_refresh_tokens`, `notifications_enabled`, plus the
+history retention settings below. Saving emits a `config-updated` event so the
+popup (if also open) picks up the change immediately instead of waiting for its
+next poll.
+
+### History retention
+
+Every poll's samples (all windows) are kept in `history.db` **forever by
+default** — they power both the live velocity fits and the History window.
+Two optional bounds, set in Settings:
+
+- `history_retention_mode` (`unlimited` | `time` | `size`) with
+  `history_retention_days` / `history_retention_mb` — cap the store by age or
+  by on-disk size. Settings shows the live store size and, from the observed
+  growth rate, estimates the counterpart (a day cap → expected MB; an MB cap →
+  expected days of history).
+- `history_downsample` (off by default) + `history_downsample_after_days` (60)
+  — thin samples older than the cutoff to one peak-preserving point per hour
+  per window instance (~30× smaller for old 5‑hour data) while recent data
+  keeps full poll fidelity. Peaks survive, so the History window's
+  per-period bars are unaffected.
+
+At ~2‑minute polls the raw store grows roughly 50 MB/year, so "keep
+everything" is a fine default.
 
 ### Projection uncertainty
 

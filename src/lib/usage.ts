@@ -37,6 +37,24 @@ export interface Sample {
   percent: number;
 }
 
+/** One completed/in-progress window instance, keyed by its reset time. */
+export interface WindowSummary {
+  resets_at: number | null;
+  peak_percent: number;
+  first_ts: number;
+  last_ts: number;
+  count: number;
+}
+
+export interface HistoryStats {
+  rows: number;
+  oldest_ts: number | null;
+  newest_ts: number | null;
+  bytes: number;
+}
+
+export type RetentionMode = "unlimited" | "time" | "size";
+
 export interface Snapshot {
   generated_at: string;
   plan: string | null;
@@ -58,6 +76,11 @@ export interface Config {
   use_api_severity: boolean;
   self_refresh_tokens: boolean;
   notifications_enabled: boolean;
+  history_retention_mode: RetentionMode;
+  history_retention_days: number;
+  history_retention_mb: number;
+  history_downsample: boolean;
+  history_downsample_after_days: number;
 }
 
 export const getUsage = () => invoke<Snapshot | null>("get_usage");
@@ -66,8 +89,12 @@ export const testNotification = () => invoke<void>("test_notification");
 export const getConfig = () => invoke<Config>("get_config");
 export const setConfig = (config: Config) => invoke<void>("set_config", { config });
 export const openSettingsWindow = () => invoke<void>("open_settings_window");
+export const openHistoryWindow = () => invoke<void>("open_history_window");
 export const getHistory = (kind: string, scope: string, since: number) =>
   invoke<Sample[]>("get_history", { kind, scope, since });
+export const getWindowSummaries = (kind: string, scope: string, since: number) =>
+  invoke<WindowSummary[]>("get_window_summaries", { kind, scope, since });
+export const getHistoryStats = () => invoke<HistoryStats | null>("get_history_stats");
 
 export function prettyKind(kind: string): string {
   switch (kind) {

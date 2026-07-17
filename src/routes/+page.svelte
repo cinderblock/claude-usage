@@ -4,6 +4,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import SettingsPanel from "$lib/SettingsPanel.svelte";
+  import HistoryPanel from "$lib/HistoryPanel.svelte";
   import UsageChart, { type ChartSeries } from "$lib/UsageChart.svelte";
   import {
     getUsage,
@@ -11,6 +12,7 @@
     getHistory,
     refreshNow,
     openSettingsWindow,
+    openHistoryWindow,
     prettyKind,
     fmtHours,
     fmtMoney,
@@ -26,7 +28,9 @@
   // the standalone Settings window, which also loads "/") — branch on which
   // one we're in rather than routing, since ssr:false + the SPA fallback give
   // every window the same shell.
-  let isSettingsWindow = $state(false);
+  let windowLabel = $state("main");
+  let isSettingsWindow = $derived(windowLabel === "settings");
+  let isHistoryWindow = $derived(windowLabel === "history");
 
   let snap = $state<Snapshot | null>(null);
   let cfg = $state<Config | null>(null);
@@ -34,8 +38,8 @@
   let refreshing = $state(false);
 
   onMount(() => {
-    isSettingsWindow = getCurrentWindow().label === "settings";
-    if (isSettingsWindow) return; // SettingsPanel owns its own lifecycle
+    windowLabel = getCurrentWindow().label;
+    if (windowLabel !== "main") return; // Settings/History panels own their lifecycle
 
     getUsage().then((s) => (snap = s));
     getConfig().then((c) => (cfg = c));
@@ -212,14 +216,17 @@
 
 {#if isSettingsWindow}
   <SettingsPanel />
+{:else if isHistoryWindow}
+  <HistoryPanel />
 {:else}
   <div class="app" data-tauri-drag-region>
     <header data-tauri-drag-region>
       <div class="title">Claude Usage</div>
       {#if snap?.plan}<span class="plan">{snap.plan}</span>{/if}
       <div class="spacer"></div>
-      <button class="icon" title="Refresh" onclick={doRefresh} class:spin={refreshing}>⟳</button>
-      <button class="icon" title="Settings" onclick={() => openSettingsWindow()}>⚙</button>
+      <button class="icon" aria-label="Refresh" onclick={doRefresh} class:spin={refreshing}>⟳</button>
+      <button class="icon" aria-label="History" onclick={() => openHistoryWindow()}>🕑</button>
+      <button class="icon" aria-label="Settings" onclick={() => openSettingsWindow()}>⚙</button>
     </header>
 
     {#if snap?.error}
@@ -275,7 +282,7 @@
                 {/if}
               {/each}
               {#if single?.dollars}
-                <button class="link" onclick={() => openUrl(USAGE_SETTINGS_URL)} title="Change your limit on claude.ai">
+                <button class="link" onclick={() => openUrl(USAGE_SETTINGS_URL)}>
                   Change limit ↗
                 </button>
               {/if}

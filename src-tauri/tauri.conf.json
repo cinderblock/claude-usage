@@ -38,6 +38,21 @@
         "skipTaskbar": false,
         "visible": false,
         "center": true
+      },
+      {
+        "label": "history",
+        "title": "Claude Usage — History",
+        "width": 720,
+        "height": 560,
+        "minWidth": 480,
+        "minHeight": 380,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {
