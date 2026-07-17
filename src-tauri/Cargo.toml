@@ -43,6 +43,10 @@ anyhow = "1"
 tauri-plugin-log = "2.8.0"
 log = "0.4.33"
 
+# Claude Code stores its OAuth blob in the login Keychain on macOS
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
 [features]
 # Desktop-only single-instance guard is added in code; kept simple here.
 

@@ -1,6 +1,8 @@
 //! Reads (and, when needed, refreshes) the OAuth token that Claude Code stores
-//! locally at `~/.claude/.credentials.json`. We reuse the same token to call the
-//! usage endpoint — no separate login.
+//! locally — at `~/.claude/.credentials.json` on Windows/Linux, in the login
+//! Keychain on macOS (file as fallback). We reuse the same token to call the
+//! usage endpoint — no separate login. Refreshed tokens are written back to
+//! wherever the blob was found so Claude Code stays in sync.
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -49,13 +51,61 @@ pub fn credentials_path() -> Result<PathBuf> {
     Ok(home.join(".claude").join(".credentials.json"))
 }
 
-/// Load the current OAuth blob from disk.
-pub fn load() -> Result<OAuth> {
+/// macOS: Claude Code keeps the same JSON blob in the login Keychain instead
+/// of on disk. Native Security.framework calls (not the `security` CLI) so
+/// the token never appears in `ps` output.
+#[cfg(target_os = "macos")]
+mod keychain {
+    use anyhow::{anyhow, Context, Result};
+
+    /// Keychain service name Claude Code stores its OAuth blob under
+    /// (account = the current user's login name).
+    pub const SERVICE: &str = "Claude Code-credentials";
+    /// `errSecItemNotFound` — the one error that means "no such item, fall
+    /// back to the credentials file" rather than a real failure.
+    const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
+    fn account() -> Result<String> {
+        std::env::var("USER").context("USER not set — cannot address the Keychain item")
+    }
+
+    /// The raw JSON blob from the login Keychain, or `None` if the item
+    /// doesn't exist. The first access prompts the user to allow this app to
+    /// read Claude Code's item ("Always Allow" persists).
+    pub fn read_blob() -> Result<Option<String>> {
+        match security_framework::passwords::get_generic_password(SERVICE, &account()?) {
+            Ok(bytes) => Ok(Some(
+                String::from_utf8(bytes).context("Keychain credentials blob is not UTF-8")?,
+            )),
+            Err(e) if e.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
+            Err(e) => Err(anyhow!(
+                "reading Keychain item '{SERVICE}' (denied the Keychain prompt?): {e}"
+            )),
+        }
+    }
+
+    pub fn write_blob(json: &str) -> Result<()> {
+        security_framework::passwords::set_generic_password(SERVICE, &account()?, json.as_bytes())
+            .map_err(|e| anyhow!("writing Keychain item '{SERVICE}': {e}"))
+    }
+}
+
+/// The raw credentials JSON from wherever it lives: the Keychain on macOS
+/// (file as fallback when the item doesn't exist), the file elsewhere.
+fn read_raw() -> Result<String> {
+    #[cfg(target_os = "macos")]
+    if let Some(blob) = keychain::read_blob()? {
+        return Ok(blob);
+    }
     let path = credentials_path()?;
-    let raw = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))
+}
+
+/// Load the current OAuth blob.
+pub fn load() -> Result<OAuth> {
+    let raw = read_raw()?;
     let parsed: CredentialsFile =
-        serde_json::from_str(&raw).context("parsing .credentials.json")?;
+        serde_json::from_str(&raw).context("parsing credentials JSON")?;
     Ok(parsed.claude_ai_oauth)
 }
 
@@ -102,10 +152,20 @@ pub async fn refresh(client: &reqwest::Client, current: &OAuth) -> Result<OAuth>
     Ok(updated)
 }
 
-/// Atomically write the refreshed tokens back to `.credentials.json`, preserving
-/// any other top-level keys already in the file. Temp-file + rename so a crash
-/// mid-write can't corrupt the file that Claude Code also depends on.
+/// Write the refreshed tokens back to wherever the blob was found — the
+/// Keychain when Claude Code's item exists (macOS), `.credentials.json`
+/// otherwise — preserving any other top-level keys. File writes are temp-file
+/// + rename so a crash mid-write can't corrupt the file that Claude Code also
+/// depends on.
 pub fn save(updated: &OAuth) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    if let Some(existing) = keychain::read_blob()? {
+        let mut root: serde_json::Value =
+            serde_json::from_str(&existing).unwrap_or_else(|_| serde_json::json!({}));
+        root["claudeAiOauth"] = serde_json::to_value(updated)?;
+        return keychain::write_blob(&serde_json::to_string(&root)?);
+    }
+
     let path = credentials_path()?;
     // Preserve unknown keys: re-read, replace only claudeAiOauth.
     let mut root: serde_json::Value = match std::fs::read_to_string(&path) {

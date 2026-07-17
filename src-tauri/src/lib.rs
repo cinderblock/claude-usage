@@ -779,6 +779,11 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
 
+            // Menu-bar app on macOS: no Dock icon, no Cmd-Tab entry — the tray
+            // icon is the app's presence. Windows still open normally.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             if let Ok(log_dir) = app.path().app_log_dir() {
                 prune_logs(&log_dir, LOG_KEEP_FILES);
             }

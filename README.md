@@ -48,28 +48,46 @@ time for it.
 
 ## Install
 
-Grab the latest Windows installer (`.exe` NSIS or `.msi`) from
-[Releases](https://github.com/cinderblock/claude-usage/releases). After that
-the app keeps itself current: it checks for a new signed release shortly after
-launch and then daily, installs it, and restarts — or on demand via the tray's
-**Check for updates**. Windows is the only tested platform so far; the code has
-no known Windows-isms, so macOS/Linux builds are likely a matter of adding CI
-targets.
+**Windows** — grab the latest installer (`.exe` NSIS or `.msi`) from
+[Releases](https://github.com/cinderblock/claude-usage/releases).
+
+**macOS** — grab the universal `.dmg` (Apple Silicon + Intel) from the same
+page and drag the app to Applications. The build is only ad-hoc signed (no
+Apple Developer certificate), so Gatekeeper refuses the first launch; clear
+the quarantine flag once:
+
+```sh
+xattr -cr "/Applications/Claude Usage.app"
+```
+
+After that the app keeps itself current on both platforms: it checks for a new
+signed release shortly after launch and then daily, installs it, and restarts —
+or on demand via the tray's **Check for updates**. (The updater's own downloads
+aren't quarantined, so the `xattr` dance is first-install only.) Windows is
+well tested; macOS support is new. Linux is untested but likely just a matter
+of adding a CI target.
 
 ## How it reads usage
 
-It reuses the OAuth token Claude Code already stores at
-`~/.claude/.credentials.json` and calls `GET https://api.anthropic.com/api/oauth/usage`
-— the same data the webapp shows. No scraping, no separate login.
+It reuses the OAuth token Claude Code already stores locally — at
+`~/.claude/.credentials.json` on Windows/Linux, in the login Keychain (service
+`Claude Code-credentials`) on macOS — and calls
+`GET https://api.anthropic.com/api/oauth/usage` — the same data the webapp
+shows. No scraping, no separate login.
+
+On macOS the first read pops a Keychain consent dialog asking to allow access
+to Claude Code's item; choose **Always Allow** so the every-2-minutes poll
+doesn't re-prompt.
 
 If the access token is expired it can refresh it (using Claude Code's public
-OAuth client id) and write the rotated token back atomically so Claude Code stays
-in sync. This is on by default and can be disabled in Settings
-(`self_refresh_tokens`).
+OAuth client id) and write the rotated token back — atomically for the file,
+in place for the Keychain item — so Claude Code stays in sync. This is on by
+default and can be disabled in Settings (`self_refresh_tokens`).
 
 ## Architecture
 
-- `src-tauri/src/credentials.rs` — read/refresh/persist the local OAuth token.
+- `src-tauri/src/credentials.rs` — read/refresh/persist the local OAuth token
+  (`.credentials.json` file on Windows/Linux, login Keychain on macOS).
 - `src-tauri/src/usage.rs` — HTTP client + models for the usage/profile endpoints.
 - `src-tauri/src/history.rs` — SQLite time-series of samples (velocity fits,
   long-term history, retention/downsampling).
@@ -99,11 +117,11 @@ npm run tauri build
 ## CI & releases
 
 - `ci.yml` — every push/PR: `svelte-check` + frontend build (ubuntu), `cargo
-  test` (windows).
+  test` (windows + macos).
 - `release.yml` — push a `v*` tag matching the version in `tauri.conf.json` /
-  `Cargo.toml` and it builds the Windows installers, signs the updater
-  artifacts (repo secrets `TAURI_SIGNING_PRIVATE_KEY` +
-  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), and publishes a GitHub Release
+  `Cargo.toml` and it builds the Windows installers and the universal macOS
+  `.dmg`, signs the updater artifacts (repo secrets `TAURI_SIGNING_PRIVATE_KEY`
+  + `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), and publishes a GitHub Release
   including the `latest.json` manifest the in-app updater polls.
 
 ## Windows
@@ -178,7 +196,8 @@ still being confirmed.
 ### Logs
 
 Written to the app log dir — on Windows
-`%LOCALAPPDATA%\com.cinderblock.claude-usage\logs\claude-usage.log` — and
+`%LOCALAPPDATA%\com.cinderblock.claude-usage\logs\claude-usage.log`, on macOS
+`~/Library/Logs/com.cinderblock.claude-usage/claude-usage.log` — and
 rotated at ~2 MB, keeping the newest 4 files (older ones are pruned at
 startup). Poll results are logged at debug, poll failures (with backoff and,
 for parse errors, the start of the offending body) at warn, alert latch
