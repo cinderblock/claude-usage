@@ -51,8 +51,8 @@ serves Macs too.
 5. [x] `ci.yml`: run the rust job on windows + macos.
 6. [x] `release.yml`: matrix (windows, macos universal), mac rust targets.
 7. [x] README: macOS install (Gatekeeper), Keychain note, log path, CI text.
-8. [x] Verify on Windows (`cargo test`), commit.
-9. [ ] Push → CI type-checks the macOS code on `macos-latest`.
+8. [x] Verify on Windows (`cargo test`, 20/20), commit `68611d2`.
+9. [x] Pushed → CI run watching `macos-latest` type-check.
 10. [ ] Hand-test on a real Mac (see checklist below).
 
 ## Findings / gotchas
@@ -97,6 +97,7 @@ serves Macs too.
 
 - [x] Surveyed code + CI; identified credentials/Keychain as the only real
       platform gap; the rest is polish (activation policy) + build targets.
-- [x] Implemented + committed (see steps above).
-- [ ] CI green on macos-latest (needs push).
-- [ ] Real-Mac verification.
+- [x] Implemented + committed (`68611d2`), pushed.
+- [x] CI green on macos-latest — Keychain code type-checks, all tests pass.
+- [ ] Real-Mac verification (hand-test checklist above; next release tag will
+      also produce the first universal .dmg to test with).
