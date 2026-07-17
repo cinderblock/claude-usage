@@ -48,8 +48,7 @@ pub struct HistoryStats {
 impl History {
     pub fn open(data_dir: &Path) -> Result<History> {
         std::fs::create_dir_all(data_dir).ok();
-        let conn = Connection::open(data_dir.join("history.db"))
-            .context("opening history.db")?;
+        let conn = Connection::open(data_dir.join("history.db")).context("opening history.db")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS samples (
                 ts        INTEGER NOT NULL,
@@ -110,7 +109,12 @@ impl History {
     /// hours — at least the window length). Samples with a null `resets_at`
     /// are idle gaps (the API reports no reset and 0% when no window is
     /// active) and belong to no instance.
-    pub fn window_summaries(&self, kind: &str, scope: &str, since_ts: i64) -> Result<Vec<WindowSummary>> {
+    pub fn window_summaries(
+        &self,
+        kind: &str,
+        scope: &str,
+        since_ts: i64,
+    ) -> Result<Vec<WindowSummary>> {
         /// Well above observed jitter (~2 min), well below any real window hop.
         const RESET_JITTER_MS: i64 = 10 * 60 * 1000;
 
@@ -122,7 +126,11 @@ impl History {
         )?;
         let rows = stmt
             .query_map(rusqlite::params![kind, scope, since_ts], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, Option<i64>>(2)?))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, f64>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
@@ -167,11 +175,14 @@ impl History {
     /// Store-wide stats for sizing/estimating retention.
     pub fn stats(&self) -> Result<HistoryStats> {
         let conn = self.conn.lock().unwrap();
-        let (rows, oldest_ts, newest_ts) = conn.query_row(
-            "SELECT COUNT(*), MIN(ts), MAX(ts) FROM samples",
-            [],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?)),
-        )?;
+        let (rows, oldest_ts, newest_ts) =
+            conn.query_row("SELECT COUNT(*), MIN(ts), MAX(ts) FROM samples", [], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<i64>>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                ))
+            })?;
         let page_count: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
         let page_size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
         Ok(HistoryStats {
@@ -185,7 +196,10 @@ impl History {
     /// Drop samples older than `before_ts` to keep the DB small.
     pub fn prune(&self, before_ts: i64) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM samples WHERE ts < ?1", rusqlite::params![before_ts])?;
+        conn.execute(
+            "DELETE FROM samples WHERE ts < ?1",
+            rusqlite::params![before_ts],
+        )?;
         Ok(())
     }
 
@@ -209,7 +223,9 @@ impl History {
         // Fraction of rows to shed to reach the target (drop a little extra so we
         // don't VACUUM on every single poll once near the cap).
         let over = (bytes - target_bytes) as f64 / bytes as f64;
-        let to_drop = ((rows as f64 * over).ceil() as i64 + rows / 20).min(rows - 1).max(1);
+        let to_drop = ((rows as f64 * over).ceil() as i64 + rows / 20)
+            .min(rows - 1)
+            .max(1);
         // Cutoff timestamp: the ts of the row just past the ones we're dropping.
         let cutoff: Option<i64> = conn
             .query_row(
@@ -219,7 +235,10 @@ impl History {
             )
             .ok();
         if let Some(cutoff) = cutoff {
-            conn.execute("DELETE FROM samples WHERE ts < ?1", rusqlite::params![cutoff])?;
+            conn.execute(
+                "DELETE FROM samples WHERE ts < ?1",
+                rusqlite::params![cutoff],
+            )?;
             conn.execute_batch("VACUUM")?;
         }
         Ok(())
@@ -275,7 +294,9 @@ mod tests {
             );",
         )
         .unwrap();
-        History { conn: Mutex::new(conn) }
+        History {
+            conn: Mutex::new(conn),
+        }
     }
 
     #[test]
@@ -293,7 +314,8 @@ mod tests {
             h.insert(ts, "weekly_all", "all", pct, Some(reset)).unwrap();
         }
         // A different scope must not bleed in.
-        h.insert(60 * HOUR, "weekly_scoped", "opus", 99.0, Some(100 * HOUR)).unwrap();
+        h.insert(60 * HOUR, "weekly_scoped", "opus", 99.0, Some(100 * HOUR))
+            .unwrap();
 
         let s = h.window_summaries("weekly_all", "all", 0).unwrap();
         assert_eq!(s.len(), 2);
@@ -312,8 +334,14 @@ mod tests {
         // Same real window: the API wobbles the reset by ±1 min poll to poll.
         let base = 100 * HOUR;
         for (i, wobble) in [0i64, 60_000, -60_000, 60_000, 0].iter().enumerate() {
-            h.insert(i as i64 * HOUR, "session", "all", 10.0 * (i as f64 + 1.0), Some(base + wobble))
-                .unwrap();
+            h.insert(
+                i as i64 * HOUR,
+                "session",
+                "all",
+                10.0 * (i as f64 + 1.0),
+                Some(base + wobble),
+            )
+            .unwrap();
         }
         let s = h.window_summaries("session", "all", 0).unwrap();
         assert_eq!(s.len(), 1, "jitter must not split an instance");
@@ -326,10 +354,12 @@ mod tests {
         let h = mem();
         // Active window → idle gap (null reset, 0%) → new window.
         h.insert(0, "session", "all", 40.0, Some(5 * HOUR)).unwrap();
-        h.insert(HOUR, "session", "all", 90.0, Some(5 * HOUR)).unwrap();
+        h.insert(HOUR, "session", "all", 90.0, Some(5 * HOUR))
+            .unwrap();
         h.insert(6 * HOUR, "session", "all", 0.0, None).unwrap();
         h.insert(7 * HOUR, "session", "all", 0.0, None).unwrap();
-        h.insert(8 * HOUR, "session", "all", 15.0, Some(13 * HOUR)).unwrap();
+        h.insert(8 * HOUR, "session", "all", 15.0, Some(13 * HOUR))
+            .unwrap();
 
         let s = h.window_summaries("session", "all", 0).unwrap();
         assert_eq!(s.len(), 2);
@@ -345,10 +375,12 @@ mod tests {
         // 30 samples 2 min apart inside one hour, peak (77) in the middle.
         for i in 0..30 {
             let pct = if i == 15 { 77.0 } else { 10.0 + i as f64 };
-            h.insert(i * 120_000, "session", "all", pct, Some(5 * HOUR)).unwrap();
+            h.insert(i * 120_000, "session", "all", pct, Some(5 * HOUR))
+                .unwrap();
         }
         // A recent sample past the cutoff must survive untouched.
-        h.insert(10 * HOUR, "session", "all", 50.0, Some(15 * HOUR)).unwrap();
+        h.insert(10 * HOUR, "session", "all", 50.0, Some(15 * HOUR))
+            .unwrap();
 
         let removed = h.downsample_before(HOUR).unwrap();
         assert_eq!(removed, 29);
@@ -365,10 +397,14 @@ mod tests {
     fn downsample_is_per_instance_and_scope() {
         let h = mem();
         // Same hour, two scopes: each keeps its own peak.
-        h.insert(0, "weekly_scoped", "opus", 10.0, Some(HOUR)).unwrap();
-        h.insert(60_000, "weekly_scoped", "opus", 30.0, Some(HOUR)).unwrap();
-        h.insert(0, "weekly_scoped", "sonnet", 90.0, Some(HOUR)).unwrap();
-        h.insert(60_000, "weekly_scoped", "sonnet", 20.0, Some(HOUR)).unwrap();
+        h.insert(0, "weekly_scoped", "opus", 10.0, Some(HOUR))
+            .unwrap();
+        h.insert(60_000, "weekly_scoped", "opus", 30.0, Some(HOUR))
+            .unwrap();
+        h.insert(0, "weekly_scoped", "sonnet", 90.0, Some(HOUR))
+            .unwrap();
+        h.insert(60_000, "weekly_scoped", "sonnet", 20.0, Some(HOUR))
+            .unwrap();
 
         h.downsample_before(HOUR).unwrap();
         let opus = h.samples_since("weekly_scoped", "opus", 0).unwrap();

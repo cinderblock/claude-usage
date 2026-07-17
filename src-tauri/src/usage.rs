@@ -189,10 +189,7 @@ impl std::error::Error for RateLimited {}
 /// Fetch usage. Returns `Ok(None)` on 401 (token rejected) so the caller can
 /// decide to refresh; 429 is a typed `RateLimited` error; other non-2xx
 /// statuses are hard errors.
-pub async fn fetch_usage(
-    client: &reqwest::Client,
-    token: &str,
-) -> Result<Option<UsageResponse>> {
+pub async fn fetch_usage(client: &reqwest::Client, token: &str) -> Result<Option<UsageResponse>> {
     let resp = authed_get(client, USAGE_URL, token).await?;
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
         return Ok(None);
@@ -221,7 +218,11 @@ pub async fn fetch_usage(
             let log_snippet: String = text.chars().take(1000).collect();
             log::warn!("usage JSON parse failed ({e}); body[..1000]: {log_snippet}");
             let snippet: String = text.chars().take(200).collect();
-            let snippet = if snippet.is_empty() { "<empty body>".to_string() } else { snippet };
+            let snippet = if snippet.is_empty() {
+                "<empty body>".to_string()
+            } else {
+                snippet
+            };
             Err(anyhow!("parsing usage JSON ({e}) — body starts: {snippet}"))
         }
     }
@@ -243,7 +244,11 @@ pub async fn fetch_profile(client: &reqwest::Client, token: &str) -> Result<Opti
     if !resp.status().is_success() {
         return Ok(None);
     }
-    Ok(Some(resp.json::<Profile>().await.context("parsing profile JSON")?))
+    Ok(Some(
+        resp.json::<Profile>()
+            .await
+            .context("parsing profile JSON")?,
+    ))
 }
 
 #[cfg(test)]

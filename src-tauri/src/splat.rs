@@ -94,7 +94,9 @@ fn over(dst: &mut Rgba<u8>, color: (u8, u8, u8), a: f32) {
     for i in 0..3 {
         let sc = s[i] as f32;
         let dc = dst[i] as f32;
-        dst[i] = ((sc * a + dc * da * (1.0 - a)) / out_a).round().clamp(0.0, 255.0) as u8;
+        dst[i] = ((sc * a + dc * da * (1.0 - a)) / out_a)
+            .round()
+            .clamp(0.0, 255.0) as u8;
     }
     dst[3] = (out_a * 255.0).round() as u8;
 }

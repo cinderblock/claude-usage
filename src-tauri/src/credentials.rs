@@ -104,8 +104,7 @@ fn read_raw() -> Result<String> {
 /// Load the current OAuth blob.
 pub fn load() -> Result<OAuth> {
     let raw = read_raw()?;
-    let parsed: CredentialsFile =
-        serde_json::from_str(&raw).context("parsing credentials JSON")?;
+    let parsed: CredentialsFile = serde_json::from_str(&raw).context("parsing credentials JSON")?;
     Ok(parsed.claude_ai_oauth)
 }
 

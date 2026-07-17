@@ -58,13 +58,21 @@ fn severity_rank(sev: &Option<String>) -> u8 {
 
 impl AlertState {
     /// Evaluate all projections and return the alerts that should be raised now.
-    pub fn evaluate(&mut self, projections: &[Projection], cfg: &Config, now_ms: i64) -> Vec<Alert> {
+    pub fn evaluate(
+        &mut self,
+        projections: &[Projection],
+        cfg: &Config,
+        now_ms: i64,
+    ) -> Vec<Alert> {
         let sustain_ms = cfg.alert_sustain_mins.max(0) * 60_000;
         let mut out = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
 
         for p in projections {
-            let name = p.scope_label.clone().unwrap_or_else(|| pretty_kind(&p.kind));
+            let name = p
+                .scope_label
+                .clone()
+                .unwrap_or_else(|| pretty_kind(&p.kind));
             let rk = resets_key(p);
 
             // Rule 1 (primary): sustained projection of hitting the wall.
@@ -74,7 +82,16 @@ impl AlertState {
             seen.insert(key.clone());
             let st = self.rules.entry(key.clone()).or_default();
             let level = p.cap_probability.unwrap_or(1.0);
-            if Self::step(st, &key, rk, p.alert_worthy, level, PROJ_ESCALATION, now_ms, sustain_ms) {
+            if Self::step(
+                st,
+                &key,
+                rk,
+                p.alert_worthy,
+                level,
+                PROJ_ESCALATION,
+                now_ms,
+                sustain_ms,
+            ) {
                 out.push(Alert {
                     key,
                     title: format!("⚠ {name} on track to run out"),
@@ -88,7 +105,16 @@ impl AlertState {
             seen.insert(key.clone());
             let st = self.rules.entry(key.clone()).or_default();
             let cond = p.percent >= cfg.near_cap_pct && climbing;
-            if Self::step(st, &key, rk, cond, p.percent, NEAR_ESCALATION, now_ms, sustain_ms) {
+            if Self::step(
+                st,
+                &key,
+                rk,
+                cond,
+                p.percent,
+                NEAR_ESCALATION,
+                now_ms,
+                sustain_ms,
+            ) {
                 out.push(Alert {
                     key,
                     title: format!("{name} nearly maxed"),
@@ -102,10 +128,22 @@ impl AlertState {
             seen.insert(key.clone());
             let st = self.rules.entry(key.clone()).or_default();
             let cond = cfg.use_api_severity && rank >= 2;
-            if Self::step(st, &key, rk, cond, rank as f64, SEV_ESCALATION, now_ms, sustain_ms) {
+            if Self::step(
+                st,
+                &key,
+                rk,
+                cond,
+                rank as f64,
+                SEV_ESCALATION,
+                now_ms,
+                sustain_ms,
+            ) {
                 out.push(Alert {
                     key,
-                    title: format!("{name}: {} from Claude", p.severity.clone().unwrap_or_default()),
+                    title: format!(
+                        "{name}: {} from Claude",
+                        p.severity.clone().unwrap_or_default()
+                    ),
                     body: format!("{:.0}% used", p.percent),
                 });
             }
@@ -199,7 +237,11 @@ mod tests {
             scope_label: None,
             percent: 50.0,
             severity: None,
-            resets_at: Some(DateTime::parse_from_rfc3339(resets_at).unwrap().with_timezone(&Utc)),
+            resets_at: Some(
+                DateTime::parse_from_rfc3339(resets_at)
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
             window_len_hours: 5.0,
             time_to_reset_hours: 2.0,
             elapsed_frac: 0.6,
@@ -281,7 +323,9 @@ mod tests {
         assert_eq!(fired, 1);
         // Same condition, new window instance → sustain again, fire again.
         for i in 10..20 {
-            fired += st.evaluate(&[proj(true, 0.9, "2026-07-07T17:00:00Z")], &c, i * MIN).len();
+            fired += st
+                .evaluate(&[proj(true, 0.9, "2026-07-07T17:00:00Z")], &c, i * MIN)
+                .len();
         }
         assert_eq!(fired, 2, "new window re-arms the latch");
     }
@@ -296,11 +340,17 @@ mod tests {
         assert!(st.proj_engaged("session", "all"), "sustained-true engages");
         // One clear poll: still engaged (release also needs sustain).
         st.evaluate(&[proj(false, 0.2, RESET)], &c, 10 * MIN);
-        assert!(st.proj_engaged("session", "all"), "brief clear keeps the latch");
+        assert!(
+            st.proj_engaged("session", "all"),
+            "brief clear keeps the latch"
+        );
         // Sustained clear releases.
         for i in 11..20 {
             st.evaluate(&[proj(false, 0.2, RESET)], &c, i * MIN);
         }
-        assert!(!st.proj_engaged("session", "all"), "sustained clear releases");
+        assert!(
+            !st.proj_engaged("session", "all"),
+            "sustained clear releases"
+        );
     }
 }

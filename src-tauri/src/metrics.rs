@@ -110,7 +110,10 @@ fn fit_rate(samples: &[Sample]) -> Option<RateFit> {
     }
     let t0 = samples[0].ts as f64;
     // x in hours since first sample, y in percent.
-    let xs: Vec<f64> = samples.iter().map(|s| (s.ts as f64 - t0) / 3_600_000.0).collect();
+    let xs: Vec<f64> = samples
+        .iter()
+        .map(|s| (s.ts as f64 - t0) / 3_600_000.0)
+        .collect();
     let ys: Vec<f64> = samples.iter().map(|s| s.percent).collect();
     let n = xs.len() as f64;
     let sx: f64 = xs.iter().sum();
@@ -143,8 +146,9 @@ fn fit_rate(samples: &[Sample]) -> Option<RateFit> {
 fn normal_cdf(z: f64) -> f64 {
     let x = z / std::f64::consts::SQRT_2;
     let t = 1.0 / (1.0 + 0.3275911 * x.abs());
-    let poly = t * (0.254829592
-        + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+    let poly = t
+        * (0.254829592
+            + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
     let erf = 1.0 - poly * (-x * x).exp();
     let erf = if x < 0.0 { -erf } else { erf };
     0.5 * (1.0 + erf)
@@ -173,15 +177,14 @@ pub fn project(
     let window_len_hours = window_len_hours(w.kind);
 
     let (time_to_reset_hours, cap_eta_base) = match w.resets_at {
-        Some(r) => (
-            (r - now).num_seconds() as f64 / 3600.0,
-            Some(r),
-        ),
+        Some(r) => ((r - now).num_seconds() as f64 / 3600.0, Some(r)),
         None => (window_len_hours, None),
     };
     let _ = cap_eta_base;
 
-    let window_start = w.resets_at.map(|r| r - Duration::hours(window_len_hours as i64));
+    let window_start = w
+        .resets_at
+        .map(|r| r - Duration::hours(window_len_hours as i64));
     let elapsed_frac = match window_start {
         Some(start) => {
             let elapsed = (now - start).num_seconds() as f64 / 3600.0;
@@ -235,7 +238,11 @@ pub fn project(
             } else {
                 let needed = (100.0 - w.percent) / lead;
                 if se < 1e-9 {
-                    if rate >= needed { 1.0 } else { 0.0 }
+                    if rate >= needed {
+                        1.0
+                    } else {
+                        0.0
+                    }
                 } else {
                     1.0 - normal_cdf((needed - rate) / se)
                 }
@@ -403,7 +410,9 @@ mod tests {
     #[test]
     fn even_pace_does_not_hit_wall() {
         // 90% of the way through a 7-day window at 80% used → under pace.
-        let now = DateTime::parse_from_rfc3339("2026-07-03T00:00:00Z").unwrap().with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-07-03T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let resets_at = now + Duration::hours(16); // ~90% through 7d window
         let base = (now - Duration::hours(6)).timestamp_millis();
         // Flat-ish recent samples: ~1%/hr
@@ -430,7 +439,9 @@ mod tests {
         // ~1 day into a 7-day window (14% elapsed), burning fast at 40%.
         // The projection sees a wall, but it's too early + not well beyond, so
         // we compute/show it without pushing an alert.
-        let now = DateTime::parse_from_rfc3339("2026-07-03T00:00:00Z").unwrap().with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-07-03T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let resets_at = now + Duration::hours(6 * 24);
         let base = (now - Duration::hours(6)).timestamp_millis();
         let samples = vec![
@@ -447,14 +458,20 @@ mod tests {
             resets_at: Some(resets_at),
         };
         let p = project(&w, &samples, now, &opts());
-        assert!(p.will_hit_wall, "projection should see the wall: {}", p.summary);
+        assert!(
+            p.will_hit_wall,
+            "projection should see the wall: {}",
+            p.summary
+        );
         assert!(!p.alert_worthy, "should not alert this early at 40%");
     }
 
     #[test]
     fn early_window_but_well_beyond_alerts() {
         // Same early phase, but already at 70% (> well_beyond 60) → alert.
-        let now = DateTime::parse_from_rfc3339("2026-07-03T00:00:00Z").unwrap().with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-07-03T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let resets_at = now + Duration::hours(6 * 24);
         let base = (now - Duration::hours(6)).timestamp_millis();
         let samples = vec![
@@ -471,13 +488,19 @@ mod tests {
             resets_at: Some(resets_at),
         };
         let p = project(&w, &samples, now, &opts());
-        assert!(p.alert_worthy, "70% this early is well beyond → alert: {}", p.summary);
+        assert!(
+            p.alert_worthy,
+            "70% this early is well beyond → alert: {}",
+            p.summary
+        );
     }
 
     #[test]
     fn mid_window_burst_alerts() {
         // Half-way through the window, burning fast → past the early phase, alert.
-        let now = DateTime::parse_from_rfc3339("2026-07-03T00:00:00Z").unwrap().with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-07-03T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let resets_at = now + Duration::hours(84); // 50% through 7d window
         let base = (now - Duration::hours(6)).timestamp_millis();
         let samples = vec![
@@ -495,12 +518,22 @@ mod tests {
         };
         let p = project(&w, &samples, now, &opts());
         assert!(p.will_hit_wall, "should project a wall: {}", p.summary);
-        assert!(p.alert_worthy, "mid-window burst should alert: {}", p.summary);
+        assert!(
+            p.alert_worthy,
+            "mid-window burst should alert: {}",
+            p.summary
+        );
         assert!(p.cap_eta.is_some());
         // Perfectly linear samples → ~zero stderr → certainty.
         assert!(p.cap_probability.unwrap() > 0.99);
-        let (lo, hi) = (p.projected_final_low_pct.unwrap(), p.projected_final_high_pct.unwrap());
-        assert!(hi - lo < 1.0, "clean fit should give a tight band: {lo}–{hi}");
+        let (lo, hi) = (
+            p.projected_final_low_pct.unwrap(),
+            p.projected_final_high_pct.unwrap(),
+        );
+        assert!(
+            hi - lo < 1.0,
+            "clean fit should give a tight band: {lo}–{hi}"
+        );
     }
 
     /// A window that's high but flat (front-loaded, now idle) must NOT warn,
@@ -509,7 +542,9 @@ mod tests {
     #[test]
     fn measured_flat_high_usage_does_not_warn() {
         // 20% into a 30-day billing month, sitting at 80% and not moving.
-        let now = DateTime::parse_from_rfc3339("2026-07-07T00:00:00Z").unwrap().with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-07-07T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let resets_at = now + Duration::hours(24 * 24); // 80% of the way through 30d
         let base = (now - Duration::hours(6)).timestamp_millis();
         let samples = vec![
@@ -526,16 +561,26 @@ mod tests {
             resets_at: Some(resets_at),
         };
         let p = project(&w, &samples, now, &opts());
-        assert!(!p.will_hit_wall, "flat usage shouldn't project a wall: {}", p.summary);
+        assert!(
+            !p.will_hit_wall,
+            "flat usage shouldn't project a wall: {}",
+            p.summary
+        );
         assert!(!p.alert_worthy);
-        assert!((p.projected_final_pct - 80.0).abs() < 1.0, "flat → projects flat, got {}", p.projected_final_pct);
+        assert!(
+            (p.projected_final_pct - 80.0).abs() < 1.0,
+            "flat → projects flat, got {}",
+            p.projected_final_pct
+        );
     }
 
     /// Noisy samples around the same mean burn as `mid_window_burst_alerts`:
     /// the band widens and the cap probability drops below certainty.
     #[test]
     fn noisy_fit_widens_band_and_softens_probability() {
-        let now = DateTime::parse_from_rfc3339("2026-07-03T00:00:00Z").unwrap().with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-07-03T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let resets_at = now + Duration::hours(84);
         let base = (now - Duration::hours(6)).timestamp_millis();
         // Mean slope ~2%/hr but bursty: flat stretches and jumps.
@@ -557,18 +602,29 @@ mod tests {
         };
         let p = project(&w, &samples, now, &opts());
         assert!(p.rate_stderr.unwrap() > 0.0);
-        let (lo, hi) = (p.projected_final_low_pct.unwrap(), p.projected_final_high_pct.unwrap());
-        assert!(hi - lo > 10.0, "noisy fit should give a wide band: {lo}–{hi}");
+        let (lo, hi) = (
+            p.projected_final_low_pct.unwrap(),
+            p.projected_final_high_pct.unwrap(),
+        );
+        assert!(
+            hi - lo > 10.0,
+            "noisy fit should give a wide band: {lo}–{hi}"
+        );
         assert!(lo >= 52.0, "band low is clamped at current percent");
         let prob = p.cap_probability.unwrap();
-        assert!(prob > 0.0 && prob < 1.0, "noisy fit → uncertain cap: {prob}");
+        assert!(
+            prob > 0.0 && prob < 1.0,
+            "noisy fit → uncertain cap: {prob}"
+        );
     }
 
     /// The mean projection barely crosses the wall on a noisy fit: at the
     /// default confidence bar the alert is suppressed; at zero it fires.
     #[test]
     fn confidence_gates_alert_on_probability_not_mean() {
-        let now = DateTime::parse_from_rfc3339("2026-07-03T00:00:00Z").unwrap().with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-07-03T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         // 26h left: needed rate ≈ 1.88%/hr vs fitted ≈ 1.98%/hr — the mean
         // crosses, but only just, and the fit noise makes it a coin-ish flip.
         let resets_at = now + Duration::hours(26);
@@ -593,11 +649,23 @@ mod tests {
         let p = project(&w, &samples, now, &opts());
         assert!(p.will_hit_wall, "mean still projects a wall: {}", p.summary);
         let prob = p.cap_probability.unwrap();
-        assert!(prob > 0.5 && prob < 0.75, "barely-crossing mean → middling odds: {prob}");
-        assert!(!p.alert_worthy, "middling odds shouldn't clear the 0.75 confidence bar");
+        assert!(
+            prob > 0.5 && prob < 0.75,
+            "barely-crossing mean → middling odds: {prob}"
+        );
+        assert!(
+            !p.alert_worthy,
+            "middling odds shouldn't clear the 0.75 confidence bar"
+        );
 
-        let lax = ProjectOpts { cap_confidence: 0.0, ..opts() };
+        let lax = ProjectOpts {
+            cap_confidence: 0.0,
+            ..opts()
+        };
         let p = project(&w, &samples, now, &lax);
-        assert!(p.alert_worthy, "zero confidence bar falls back to mean behavior");
+        assert!(
+            p.alert_worthy,
+            "zero confidence bar falls back to mean behavior"
+        );
     }
 }
