@@ -1,7 +1,7 @@
 # Claude Usage Watcher — Plan
 
-Plan path: `~/.claude/plans/(scratch).md`
-(On approval, copy to the project as `plans/claude-usage-watcher.md` per global CLAUDE.md, and keep it as the living plan.)
+This is the living plan for the app itself. Publishing, CI builds, and
+self-updates are tracked separately in `plans/release-pipeline.md`.
 
 ## Context
 
@@ -330,7 +330,7 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
 
 ## Progress log
 
-- [x] M1 Scaffold — Tauri v2 + SvelteKit-TS in `the project directory`; plugins added
+- [x] M1 Scaffold — Tauri v2 + SvelteKit-TS in the project directory; plugins added
   (notification, positioner, autostart). Window is hidden/frameless/always-on-top popup.
 - [x] M2 Backend core — `credentials.rs` + `usage.rs`; **validated live** via `cargo run --bin smoke`
   (parsed session/weekly/weekly-scoped correctly).
@@ -341,10 +341,12 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
 - [x] M6 Alerts — velocity-based rule engine with de-dup/re-arm; wired to OS notifications.
 - [x] M7 Token refresh + atomic write-back — implemented behind `self_refresh_tokens`.
 - [x] Full app compiles and **launches without panic** (`claude-usage.exe` running; tray live).
-- [ ] M8 Polish remaining: autostart **UI toggle** + auto-enable, single-instance guard, packaged
-  installer (`npm run tauri build`), app icon set. Verify popup visually + notification fires
-  (lower a threshold to force one).
-- [ ] Copy this plan into project `plans/claude-usage-watcher.md` and (if desired) `git init` + commit.
+- [x] M8 Polish — autostart UI toggle (`SettingsPanel.svelte` + plugin-autostart), single-instance
+  guard (`tauri_plugin_single_instance` in `lib.rs`), app icon set (recolorable splat). Packaged
+  installer + distribution moved to the release pipeline (see `plans/release-pipeline.md`).
+- [x] Plan copied into the project; repo initialized and committed.
+- [ ] In flight (uncommitted WIP): local-date boundaries + weekend shading on multi-day charts
+  (`markDays` prop in `UsageChart.svelte`, wired from `+page.svelte`).
 
 ## Things not to do
 
@@ -354,8 +356,8 @@ clears or when that window's `resets_at` advances (new window). Prevents per-pol
 - Don't poll aggressively (respect the endpoint; 60s baseline is plenty).
 - Don't `git init`-and-commit or touch anything outside this project dir without asking.
 
-## Open questions (non-blocking; sensible defaults chosen)
+## Open questions
 
-1. Default thresholds — 5h 80%, weekly pace factor 1.4. Fine to tune later in Settings.
-2. Poll interval — 60s default. OK?
-3. Icon style — number-in-badge vs colored ring. Will prototype the number badge; easy to swap.
+None currently. The originals are resolved: thresholds are configurable in Settings; poll
+interval defaults to 120s with a 30s floor (post-429 hardening); tray icon is the number
+badge with a ring fallback.
