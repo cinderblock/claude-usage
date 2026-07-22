@@ -14,15 +14,12 @@
     startMs,
     endMs,
     nowMs,
-    yCap = 150,
     markDays = false,
   }: {
     series: ChartSeries[];
     startMs: number;
     endMs: number;
     nowMs: number;
-    /** Hard ceiling on the y-axis (100 for a real dollar cap, ~150 otherwise). */
-    yCap?: number;
     /** Draw local-date boundaries and weekend shading (for multi-day windows). */
     markDays?: boolean;
   } = $props();
@@ -33,21 +30,10 @@
 
   const span = $derived(Math.max(endMs - startMs, 1));
 
-  // Y-axis top: room above the data, capped so overshoot doesn't squash the
-  // meaningful 0–100 band.
-  const yMax = $derived(
-    Math.min(
-      yCap,
-      Math.max(
-        105,
-        ...series.flatMap((s) => [
-          s.currentPct,
-          s.projectedPct ?? 0,
-          ...s.samples.map((p) => p.percent),
-        ]),
-      ),
-    ),
-  );
+  // Y-axis tops out at 100% — the meaningful ceiling for every window. Overshoot
+  // (usage or projection past 100) rides the top edge rather than wasting the
+  // chart on empty headroom above the cap.
+  const yMax = 100;
 
   const xOf = (ts: number) => ((ts - startMs) / span) * w;
   const yOf = (pct: number) => H - (Math.min(Math.max(pct, 0), yMax) / yMax) * H;
@@ -96,10 +82,6 @@
     {/each}
     <!-- even-pace reference: 0% at window start → 100% at reset -->
     <line x1={xOf(startMs)} y1={yOf(0)} x2={xOf(endMs)} y2={yOf(100)} class="pace" />
-    <!-- 100% ceiling -->
-    {#if yMax > 100}
-      <line x1="0" y1={yOf(100)} x2={w} y2={yOf(100)} class="cap-line" />
-    {/if}
     <!-- now -->
     {#if nowX >= 0 && nowX <= w}
       <line x1={nowX} y1="0" x2={nowX} y2={H} class="now" />
@@ -150,12 +132,6 @@
     stroke-width: 1;
     stroke-dasharray: 3 3;
     opacity: 0.6;
-  }
-  .cap-line {
-    stroke: #d2372b;
-    stroke-width: 1;
-    stroke-dasharray: 2 3;
-    opacity: 0.4;
   }
   .now {
     stroke: #e8eaed;

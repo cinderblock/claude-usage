@@ -169,7 +169,6 @@
     series: ChartSeries[];
     start: number;
     end: number;
-    yCap: number;
     level: Level;
   }
 
@@ -207,7 +206,6 @@
         series,
         start,
         end,
-        yCap: rep.dollars ? 100 : 150,
         level: worst,
       };
     });
@@ -266,7 +264,7 @@
               {/if}
             </div>
 
-            <UsageChart series={g.series} startMs={g.start} endMs={g.end} nowMs={now} yCap={g.yCap} markDays={g.id === "weekly"} />
+            <UsageChart series={g.series} startMs={g.start} endMs={g.end} nowMs={now} markDays={g.id === "weekly"} />
 
             <div class="meta">
               <span class="sub">resets in {fmtHours(ttr)}</span>
